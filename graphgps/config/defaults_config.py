@@ -11,6 +11,10 @@ def overwrite_defaults_cfg(cfg):
     Therefore never reset here config options that are custom added, only change
     those that exist in core GraphGym.
     """
+    # Training (and validation) pipeline mode
+    cfg.train.mode = 'custom'  # 'standard' uses PyTorch-Lightning since PyG 2.1
+    
+    cfg.device = 'cuda'
 
     # Overwrite default dataset name
     cfg.dataset.name = 'none'
