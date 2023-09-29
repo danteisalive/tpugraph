@@ -7,7 +7,7 @@ import os.path as osp
 import numpy as np
 import torch
 from torch_geometric.data import (InMemoryDataset, Data, download_url,
-                                  extract_tar, extract_zip)
+                                  extract_tar, extract_zip, Dataset)
 from torch_geometric.utils import remove_isolated_nodes
 from torch_sparse import SparseTensor
 
@@ -52,12 +52,20 @@ class TPUGraphs(InMemoryDataset):
             for split_name in split_names:
                 filenames = glob.glob(osp.join(os.path.join(raw_path, split_name), '*.npz'))
                 for filename in filenames:
+                    print("Loading file: ", filename)
                     split_dict[split_name].append(graphs_cnt)
                     np_file = dict(np.load(filename))
+
                     if "edge_index" not in np_file:
-                      print('error in', filename)
+                      raise ValueError(f"Can't find edge_index in the dataset!")
+                    
                     edge_index = torch.tensor(np_file["edge_index"].T)
                     runtime = torch.tensor(np_file["config_runtime"])
+
+                    if split_name != 'test':
+                        assert (runtime == 0).all().item() is False, "Loader Error: all emelents are 0!"
+                        assert (runtime == 0).any().item() is False, "Loader Error: all emelents are 0!"
+                    
                     op = torch.tensor(np_file["node_feat"])
                     op_code = torch.tensor(np_file["node_opcode"])
                     config_feats = torch.tensor(np_file["node_config_feat"])
@@ -68,14 +76,23 @@ class TPUGraphs(InMemoryDataset):
                     num_nodes = torch.tensor(np_file["node_feat"].shape[0])
                     num_parts = num_nodes // self.thres + 1
                     interval = num_nodes // num_parts
+
+                    if interval == 0:
+                        raise ValueError(f"Segment size {self.thres} is larger than total number of nodes!")
+                    
                     partptr = torch.arange(0, num_nodes, interval+1)
                     if partptr[-1] != num_nodes:
                         partptr = torch.cat([partptr, torch.tensor([num_nodes])])
+
                     data = Data(edge_index=edge_index, op_feats=op, op_code=op_code, config_feats=config_feats, config_idx=config_idx,
                                 num_config=num_config, num_config_idx=num_config_idx, y=runtime, num_nodes=num_nodes, partptr=partptr, partition_idx = parts_cnt)
                     data_list.append(data)
                     graphs_cnt += 1
                     parts_cnt += num_parts * num_config
+
+                    if split_name == 'train' and graphs_cnt > 30:
+                        break
+
             torch.save(self.collate(data_list), self.processed_paths[0])
             torch.save(split_dict, self.processed_paths[1])
     def get_idx_split(self):

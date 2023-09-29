@@ -44,6 +44,9 @@ def preprocess_batch(batch, model, num_sample_configs):
     
     batch_list = batch.to_data_list()
     processed_batch_list = []
+
+    # print(batch_list[0])
+    
     for g in batch_list:
         sample_idx = torch.randint(0, g.num_config.item(), (num_sample_configs,))
         g.y = g.y[sample_idx]
@@ -53,19 +56,66 @@ def preprocess_batch(batch, model, num_sample_configs):
         g.config_feats_full[g.config_idx, ...] += g.config_feats
         g.adj = SparseTensor(row=g.edge_index[0], col=g.edge_index[1], sparse_sizes=(g.num_nodes, g.num_nodes))
         processed_batch_list.append(g)
+    
+    # print(processed_batch_list[0])
+
     return Batch.from_data_list(processed_batch_list), sample_idx
         
 def train_epoch(logger, loader, model, optimizer, scheduler, emb_table, batch_accumulation):
     model.train()
     optimizer.zero_grad()
     time_start = time.time()
+
+    """
+    for loop for segmentation and batch preperation
+    At the end of this loop, 32 configs for a random number of segments of a graph are selected for training.
+    lets say we have 10 graphs in our dataset, we select 2 segment of each graph for training and we select 32 configs for each graph.
+    At the end of this forr loop, `batch_train_list` will have:  10 (graphs) x 2 segments x 32 configs = 640 training samples
+    """
     num_sample_config = 32
     for iter, batch in enumerate(loader):
+
+        """
+        A node BEFORE preprocess_batch:
+        Data(edge_index=[2, 16695], 
+            y=[40736], 
+            op_feats=[10123, 140], 
+            op_code=[10123], 
+            config_feats=[14013184, 18], 
+            config_idx=[344], 
+            num_config=[1], 
+            num_config_idx=[1], 
+            partptr=[12], 
+            partition_idx=[1], 
+            num_nodes=10123
+            )
+
+        A node AFTER preprocess_batch:
+        Data(edge_index=[2, 16695], 
+             y=[32], 
+             op_feats=[10123, 140], 
+             op_code=[10123], 
+             config_feats=[344, 32, 18], 
+             config_idx=[344], 
+             num_config=[1], 
+             num_config_idx=[1], 
+             partptr=[12], 
+             partition_idx=[1], 
+             num_nodes=10123, 
+             config_feats_full=[10123, 32, 18], 
+             adj=[tensor(10123), tensor(10123), nnz=16695]
+             )
+        """
         batch, sampled_idx = preprocess_batch(batch, model, num_sample_config)
         batch.to(torch.device(cfg.device))
         true = batch.y
+        assert (true == 0).all().item() is False, "true is all zero in training"
+        # print("BS: ", true.shape)
         
         batch_list = batch.to_data_list()
+        print("Train Batch Size:: ", len(batch_list))
+        # num_of_op_codes = 0
+
         batch_train_list = []
         batch_other = []
         batch_num_parts = []
@@ -84,45 +134,125 @@ def train_epoch(logger, loader, model, optimizer, scheduler, emb_table, batch_ac
                 del data.num_nodes
                 adj, data.adj = data.adj, None
 
+                # narrow down the adjacency matrix as we only care about nodes in a segment which are shown by `start` and `length`
                 adj = adj.narrow(0, start, length).narrow(1, start, length)
                 edge_idx = adj.storage.value()
 
+                
                 for key, item in data:
+                    # update keys such as `op_feats`,`op_code`, `config_feats_full`, and `num_nodes`  of the data so we only have a segments nodes 
                     if isinstance(item, torch.Tensor) and item.size(0) == N:
                         data[key] = item.narrow(0, start, length)
+                    # update keys such as `?`  of the data so we only have a segments nodes 
                     elif isinstance(item, torch.Tensor) and item.size(0) == E:
                         data[key] = item[edge_idx]
                     else:
                         data[key] = item
 
+                # update adjacency list for this data
                 row, col, _ = adj.coo()
+                # print("ADJ Matrix: ", row.shape, col.shape, "Number of Nodes: ", length)
                 data.edge_index = torch.stack([row, col], dim=0)
+
+                
                 if j == segment_to_train:
+                    # if this segment is SELECTED for training, then for `num_sample_config` of configs, create samples
                     for k in range(len(data.y)):
+                        
+                        # num_of_op_codes += data.op_code.shape[0]
                         unfold_g = Data(edge_index=data.edge_index, op_feats=data.op_feats, op_code=data.op_code, config_feats=data.config_feats_full[:, k, :], num_nodes=length)
                         batch_train_list.append(unfold_g)
                 else:
+                    # if this segment is NOT SELECTED for training, then for `num_sample_config` of configs, add them to history table
                     for k in range(len(data.y)):
                         batch_other.append(emb_table.pull(batch_list[i].partition_idx.cpu()+num_parts*sampled_idx[k]+j))       
+        
+        # print(f"{num_of_op_codes=}")
+        # print("Size:", len(batch_train_list))
+        
         batch_train = Batch.from_data_list(batch_train_list)
         batch_train = batch_train.to(torch.device(cfg.device))
         true = true.to(torch.device(cfg.device))
         # more preprocessing
         batch_train.split = 'train'
+
+        # Pass op codes which are 120 in total from an embedding layer which is (128x128), so after this each op code is mapped to to a [1x128] vector
+        # please note that although we have only 120 unique op codes, we select 128 for our embeeding table 
         batch_train.op_emb = model.emb(batch_train.op_code.long())
+        
+        # print(f"{batch_train.op_feats.shape=}")
+        # print(f"{batch_train.op_emb.shape=}")
+        # print(f"{model.op_weights.shape=}")
+        # print(f"{batch_train.config_feats.shape=}")
+        # print(f"{model.config_weights.shape=}")
+        # print(f"{batch_train.edge_index.shape=}")
+
+        """
+        batch_train.op_feats.shape=torch.Size([598432, 140])
+        batch_train.op_emb.shape=torch.Size([598432, 128])
+        model.op_weights.shape=torch.Size([1, 1])
+        batch_train.config_feats.shape=torch.Size([598432, 18])
+        model.config_weights.shape=torch.Size([1, 18])
+        batch_train.edge_index.shape=torch.Size([2, 770560])
+        """
+        # batch_train.x has all the nodes with their configs including [node features (140), op code feature (128), config features (18)  => 286 features in total
+        # for the above example, 598432 is the total number of nodes that are in our all the 672 samples from 21 graphs and 32 configs for each graph => 21 * 32 = 672
+        # Please note that we cannot say 598432 / 672 as we don't know how many nodes we had in each sample!!!
         batch_train.x = torch.cat((batch_train.op_feats, batch_train.op_emb * model.op_weights, batch_train.config_feats * model.config_weights), dim=-1)
+
+        """batch_train.x.shape = (598432x286)"""
+
+        # We pass this confogs from a linear layer which is (286x128)
         batch_train.x = model.linear_map(batch_train.x)
         
-        module_len = len(list(model.model.children()))
-        for i, module in enumerate(model.model.children()):
+        """batch_train.x.shape = (598432x128)"""
+
+        # print(f"Module Length (model.model.children()): {len(list(model.model.children()))}")
+        # print(f"Module Length (model.model.model.children()): {len(list(model.model.model.children()))}")
+
+        # execpt the last layer which is the prediction head, run other layers
+        module_len = len(list(model.model.model.children()))
+        for i, module in enumerate(model.model.model.children()):
             if i < module_len - 1:
                 batch_train = module(batch_train)
             if i == module_len - 1:
                 batch_train_embed = tnn.global_max_pool(batch_train.x, batch_train.batch) + tnn.global_mean_pool(batch_train.x, batch_train.batch)
+        
+        # before passing into the Head Predictor, first do a max pool and mean
+        # TODO: do a sample by urself
+        # batch_train_embed = tnn.global_max_pool(batch_train.x, batch_train.batch) + tnn.global_mean_pool(batch_train.x, batch_train.batch)
         graph_embed = batch_train_embed / torch.norm(batch_train_embed, dim=-1, keepdim=True)
-        for i, module in enumerate(model.model.children()):
-            if i == module_len - 1:
-                graph_embed = module.layer_post_mp(graph_embed)
+
+
+        """
+        batch_train.batch.shape = torch.Size([598432])  tells the batch number for each node in batch_train.x
+        batch_train.x.shape = torch.Size([598432, 256])
+        batch_train_embed.shape = torch.Size([672, 256]) we have 672 (21 * 32) batches therefore after max +mean pooling we get a tensor of (672x128)
+        graph_embed.shape = torch.Size([672, 256])
+        """
+        # print(batch_train.batch.shape)
+        # print(batch_train.x.shape)
+        # print(batch_train_embed.shape)
+        # print("Before Head Prediction: ", graph_embed.shape)
+
+        # assert(0)
+        graph_embed = list(model.model.model.post_mp.children())[0](graph_embed)
+        # for i, module in enumerate(model.model.model.children()):
+        #     if i == module_len - 1:
+        #         graph_embed = module.layer_post_mp(graph_embed)
+
+        # modules_list = list(model.model.model.children())
+        # graph_embed = modules_list[-1](batch_train)
+        # graph_embed = module.layer_post_mp(graph_embed)
+
+        """
+        Pred:  torch.Size([672, 1])
+        Label:  None
+        """
+        # Labels will be none because we never copied them but we have them seperatly stored somewhere else in `true` variable
+        # print("After Head Prediction: ", graph_embed.shape)
+        # print("Pred: ", graph_embed[0].shape)
+        # print("Label: ", graph_embed[1])
         
         binomial = torch.distributions.binomial.Binomial(probs=0.5)
         if len(batch_other) > 0:
@@ -143,20 +273,17 @@ def train_epoch(logger, loader, model, optimizer, scheduler, emb_table, batch_ac
         else:
             pred = graph_embed
         
-        if cfg.dataset.name == 'ogbg-code2':
-            loss, pred_score = subtoken_cross_entropy(pred, true)
-            _true = true
-            _pred = pred_score
-        elif cfg.dataset.name == 'TPUGraphs':
-            pred = pred.view(-1, num_sample_config)
-            true = true.view(-1, num_sample_config)
-            loss = pairwise_hinge_loss_batch(pred, true)
-            _true = true.detach().to('cpu', non_blocking=True)
-            _pred = pred.detach().to('cpu', non_blocking=True)
-        else:
-            loss, pred_score = compute_loss(pred, true)
-            _true = true.detach().to('cpu', non_blocking=True)
-            _pred = pred_score.detach().to('cpu', non_blocking=True)
+
+
+        assert cfg.dataset.name == 'TPUGraphs', ""
+        pred = pred.view(-1, num_sample_config)
+        true = true.view(-1, num_sample_config)
+        loss = pairwise_hinge_loss_batch(pred, true)
+        _true = true.detach().to('cpu', non_blocking=False)
+        _pred = pred.detach().to('cpu', non_blocking=False)
+
+
+
         loss.backward()
         # Parameters update after accumulating gradients for given num. batches.
         if ((iter + 1) % batch_accumulation == 0) or (iter + 1 == len(loader)):
@@ -169,6 +296,9 @@ def train_epoch(logger, loader, model, optimizer, scheduler, emb_table, batch_ac
             push_idx = batch_list[i // num_sample_config].partition_idx.cpu()+sampled_idx[i % num_sample_config]*(len(batch_list[i // num_sample_config].partptr)-1)+segments_to_train[i // num_sample_config]
             emb_table.push(graph_embed[i].cpu(), push_idx)
         
+
+        assert (_true == 0).all().item() is False, "_true is all zero in training"
+
         logger.update_stats(true=_true,
                             pred=_pred,
                             loss=loss.detach().cpu().item(),
@@ -188,9 +318,12 @@ def eval_epoch(logger, loader, model, split='val'):
         batch, _ = preprocess_batch(batch, model, num_sample_config)
         batch.split = split
         true = batch.y
+        assert (true == 0).all().item() is False, "true is all zero in evaluation"
         batch_list = batch.to_data_list()
         batch_seg = []
         batch_num_parts = []
+
+        print("Eval Batch Size: ", len(batch_list))
         for i in range(len(batch_list)):
             num_parts = len(batch_list[i].partptr) - 1
             batch_num_parts.append(num_parts)
@@ -229,16 +362,17 @@ def eval_epoch(logger, loader, model, split='val'):
         batch_seg.x = torch.cat((batch_seg.op_feats, model.op_weights * batch_seg.op_emb, batch_seg.config_feats * model.config_weights), dim=-1)
         batch_seg.x = model.linear_map(batch_seg.x)
        
-        module_len = len(list(model.model.children()))
-        for i, module in enumerate(model.model.children()):
+        module_len = len(list(model.model.model.children()))
+        for i, module in enumerate(model.model.model.children()):
             if i < module_len - 1:
                 batch_seg = module(batch_seg)
             if i == module_len - 1:
                 batch_seg_embed = tnn.global_max_pool(batch_seg.x, batch_seg.batch) + tnn.global_mean_pool(batch_seg.x, batch_seg.batch)
         graph_embed = batch_seg_embed / torch.norm(batch_seg_embed, dim=-1, keepdim=True)
-        for i, module in enumerate(model.model.children()):
-            if i == module_len - 1:
-                res = module.layer_post_mp(graph_embed)
+        res = list(model.model.model.post_mp.children())[0](graph_embed)
+        # for i, module in enumerate(model.model.children()):
+        #     if i == module_len - 1:
+        #         res = module.layer_post_mp(graph_embed)
         pred = torch.zeros(len(loader.dataset), len(data.y), 1).to(torch.device(cfg.device))
         part_cnt = 0
         for i, num_parts in enumerate(batch_num_parts):
@@ -249,20 +383,17 @@ def eval_epoch(logger, loader, model, split='val'):
         batch_num_parts = torch.Tensor(batch_num_parts).to(torch.device(cfg.device))
         batch_num_parts = batch_num_parts.view(-1, 1)
         extra_stats = {}
-        if cfg.dataset.name == 'ogbg-code2':
-            loss, pred_score = subtoken_cross_entropy(pred, true)
-            _true = true
-            _pred = pred_score
-        elif cfg.dataset.name == 'TPUGraphs':
-            pred = pred.view(-1, num_sample_config)
-            true = true.view(-1, num_sample_config)
-            loss = pairwise_hinge_loss_batch(pred, true)
-            _true = true.detach().to('cpu', non_blocking=True)
-            _pred = pred.detach().to('cpu', non_blocking=True)
-        else:
-            loss, pred_score = compute_loss(pred, true)
-            _true = true.detach().to('cpu', non_blocking=True)
-            _pred = pred_score.detach().to('cpu', non_blocking=True)
+
+        assert cfg.dataset.name == 'TPUGraphs', ""
+        pred = pred.view(-1, num_sample_config)
+        true = true.view(-1, num_sample_config)
+        loss = pairwise_hinge_loss_batch(pred, true)
+        _true = true.detach().to('cpu', non_blocking=False)
+        _pred = pred.detach().to('cpu', non_blocking=False)
+
+
+        assert (_true == 0).all().item() is False, "_true is all zero in evaluation"
+
         logger.update_stats(true=_true,
                             pred=_pred,
                             loss=loss.detach().cpu().item(),
@@ -321,12 +452,12 @@ def custom_train(loggers, loaders, model, optimizer, scheduler):
         perf[0].append(loggers[0].write_epoch(cur_epoch))
 
         if is_eval_epoch(cur_epoch):
-            for i in range(1, num_splits):
+            for i in range(1, num_splits - 1): # <AliJahan/> -1 added to disable validation on test data
                 eval_epoch(loggers[i], loaders[i], model,
                            split=split_names[i - 1])
                 perf[i].append(loggers[i].write_epoch(cur_epoch))
         else:
-            for i in range(1, num_splits):
+            for i in range(1, num_splits - 1): # <AliJahan/> -1 added to disable validation on test data
                 perf[i].append(perf[i][-1])
 
         val_perf = perf[1]
@@ -359,7 +490,7 @@ def custom_train(loggers, loaders, model, optimizer, scheduler):
                     # the main metric on the training set.
                     best_train = f"train_{m}: {0:.4f}"
                 best_val = f"val_{m}: {perf[1][best_epoch][m]:.4f}"
-                best_test = f"test_{m}: {perf[2][best_epoch][m]:.4f}"
+                # best_test = f"test_{m}: {perf[2][best_epoch][m]:.4f}" # <AliJahan/> commented since we do not need test for now
 
                 if cfg.wandb.use:
                     bstats = {"best/epoch": best_epoch}
@@ -386,8 +517,8 @@ def custom_train(loggers, loaders, model, optimizer, scheduler):
                 f"(avg {np.mean(full_epoch_times):.1f}s) | "
                 f"Best so far: epoch {best_epoch}\t"
                 f"train_loss: {perf[0][best_epoch]['loss']:.4f} {best_train}\t"
-                f"val_loss: {perf[1][best_epoch]['loss']:.4f} {best_val}\t"
-                f"test_loss: {perf[2][best_epoch]['loss']:.4f} {best_test}"
+                f"val_loss: {perf[1][best_epoch]['loss']:.4f} {best_val}"
+                # f"test_loss: {perf[2][best_epoch]['loss']:.4f} {best_test}" # <AliJahan/> commented since we do not need test for now
             )
             if hasattr(model, 'trf_layers'):
                 # Log SAN's gamma parameter values if they are trainable.
@@ -448,13 +579,13 @@ def inference_only(loggers, loaders, model, optimizer=None, scheduler=None):
             # the main metric on the training set.
             best_train = f"train_{m}: {0:.4f}"
         best_val = f"val_{m}: {perf[1][best_epoch][m]:.4f}"
-        best_test = f"test_{m}: {perf[2][best_epoch][m]:.4f}"
+        # best_test = f"test_{m}: {perf[2][best_epoch][m]:.4f}" # <AliJahan/> commented since we do not need test for now
 
     logging.info(
         f"> Inference | "
         f"train_loss: {perf[0][best_epoch]['loss']:.4f} {best_train}\t"
-        f"val_loss: {perf[1][best_epoch]['loss']:.4f} {best_val}\t"
-        f"test_loss: {perf[2][best_epoch]['loss']:.4f} {best_test}"
+        f"val_loss: {perf[1][best_epoch]['loss']:.4f} {best_val}"
+        # f"test_loss: {perf[2][best_epoch]['loss']:.4f} {best_test}" # <AliJahan/> commented since we do not need test for now
     )
     logging.info(f'Done! took: {time.perf_counter() - start_time:.2f}s')
     for logger in loggers:
