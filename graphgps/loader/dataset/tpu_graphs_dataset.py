@@ -37,7 +37,7 @@ class TPUGraphsDataset(InMemoryDataset):
         super().__init__(root, transform, pre_transform, pre_filter)
         self.data, self.slices = torch.load(self.processed_paths[0])
 
-        # performs some kind of shenanigens here!
+        # performs some kind of shenanigens here for feature normalization!
         op_feats_mean = torch.mean(self.data.op_feats, dim=0, keepdim=True)
         op_feats_std = torch.std(self.data.op_feats, dim=0, keepdim=True)
         op_feats_std[op_feats_std < 1e-6] = 1
@@ -133,11 +133,20 @@ class TPUGraphsDataset(InMemoryDataset):
                 filenames = glob.glob(osp.join(os.path.join(raw_path, split_name), '*.npz'))
                 for filename in filenames:
 
-                    print("Loading file: ", filename)
+                    print("Loading file (FUCK): ", filename)
                     split_dict[split_name].append(graphs_cnt)
 
                     layout_dict = self._layout_loader(filename)
+
+                    print("Before Preprocess:")
+                    for k,v in split_dict.items():
+                        print(k, v.shape)
+
                     self._preprocess(layout_dict)
+                    
+                    print("After Preprocess:")
+                    for k,v in split_dict.items():
+                        print(k, v.shape)
 
                     if "edge_index" not in layout_dict:
                       raise ValueError(f"Can't find edge_index in the dataset!")
@@ -176,7 +185,7 @@ class TPUGraphsDataset(InMemoryDataset):
                     graphs_cnt += 1
                     parts_cnt += num_parts * num_config
 
-                    if split_name == 'train' and graphs_cnt > 30:
+                    if split_name == 'train' and graphs_cnt > 10:
                         break
 
             torch.save(self.collate(data_list), self.processed_paths[0])

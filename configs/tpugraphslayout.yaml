@@ -1,7 +1,7 @@
 out_dir: tests/results
 dataset:
   name: TPUGraphsDataset
-  format: PyG-TPUGraphs
+  format: PyG-TPUGraphsDataset
   task: graph
   task_type: ranking
   transductive: False
