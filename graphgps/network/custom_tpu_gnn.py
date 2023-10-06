@@ -68,6 +68,19 @@ class CustomGNN(torch.nn.Module):
         5) Expressiveness: The NN layer adds expressiveness to the model. It allows the GNN to capture complex relationships and patterns within the graph, which might not be directly observable in the raw node features.
         6) Initialization: The NN layer provides an opportunity to initialize node representations in a meaningful way.
         """
+        """
+        (pre_mp): GeneralMultiLayer(
+        (Layer_0): GeneralLayer(
+          (layer): Linear(
+            (model): Linear(128, 256, bias=True)
+          )
+          (post_layer): Sequential(
+            (0): Dropout(p=0.1, inplace=False)
+            (1): PReLU(num_parameters=1)
+          )
+        )
+        )
+        """
         if cfg.gnn.layers_pre_mp > 0:
             self.pre_mp = GNNPreMP(
                 dim_in, cfg.gnn.dim_inner, cfg.gnn.layers_pre_mp)
