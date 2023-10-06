@@ -26,10 +26,14 @@ class NodeEncoder(torch.nn.Module):
         self.embedding_size = embedding_size
         self.layer_norm_eps = layer_norm_eps
 
+        # nodes feature extractor 
         self.node_opcode_embeddings = torch.nn.Embedding(self.NODE_OP_CODES+1 , self.embedding_size, padding_idx=self.NODE_OP_CODES)
-        self.linear = torch.nn.Linear(self.NODE_FEATS, self.embedding_size, bias=False)
-        self.layer_norm = torch.nn.LayerNorm(self.embedding_size, eps=self.layer_norm_eps)
-        
+        self.node_feat_linear = torch.nn.Linear(self.NODE_FEATS, self.embedding_size, bias=False)
+        self.node_feat_layer_norm = torch.nn.LayerNorm(self.embedding_size, eps=self.layer_norm_eps)
+
+        # configurable nodes feature extractor
+        self.configurable_nodes_feat_linear = torch.nn.Linear(self.NODE_CONFIG_FEATS, self.embedding_size, bias=False)
+        self.configurable_nodes_feat_layer_norm = torch.nn.LayerNorm(self.embedding_size, eps=self.layer_norm_eps)
         
     def forward(self,
                 batch : Batch,
@@ -41,47 +45,23 @@ class NodeEncoder(torch.nn.Module):
         node_feat : torch.Tensor  = batch.op_feats                      # (num_nodes, NODE_FEATS)
         assert node_feat.shape[1] == self.NODE_FEATS, "Nodes features are still not embbded so its shape should be NODE_FEATS!"
 
-        configurable_nodes_feat : torch.Tensor  = batch.config_feats    # (num_nodes, embedding_size)
-        assert configurable_nodes_feat.shape[1] == self.embedding_size, "Configurable nodes should first embeddded before passing to this module"
+        configurable_nodes_feat : torch.Tensor  = batch.config_feats    # (num_nodes, NODE_CONFIG_FEATS)
+        assert configurable_nodes_feat.shape[1] == self.NODE_CONFIG_FEATS, "Configurable nodes features are still not embbded so its shape should be NODE_CONFIG_FEATS!"
 
         opcode_embeddings = self.node_opcode_embeddings(node_opcode)    # (num_nodes, 1) => (num_nodes, embedding_size)
-        node_feats =  self.linear(node_feat)                            # (num_nodes, NODE_FEATS) => (num_nodes, embedding_size)
+        node_feats =  self.node_feat_linear(node_feat)                  # (num_nodes, NODE_FEATS) => (num_nodes, embedding_size)
         nodes_features = opcode_embeddings + node_feats                 # (num_nodes, embedding_size) => (num_nodes, embedding_size)
         # TODO: Fix this!
-        nodes_features = self.layer_norm(nodes_features)                # (num_nodes, embedding_size) => (num_nodes, embedding_size)
+        nodes_features = self.node_feat_layer_norm(nodes_features)      # (num_nodes, embedding_size) => (num_nodes, embedding_size)
 
-        batch.x = nodes_features + configurable_nodes_feat              # (num_nodes, embedding_size) + (num_nodes, embedding_size) => (num_nodes, embedding_size)
+        onfigurable_nodes_feat_embeddings = self.configurable_nodes_feat_linear(configurable_nodes_feat)                    # (num_nodes, NODE_CONFIG_FEATS) => (num_nodes, embedding_size)
+        # TODO: Fix this!
+        onfigurable_nodes_feat_embeddings = self.configurable_nodes_feat_layer_norm(onfigurable_nodes_feat_embeddings)      # (num_nodes, embedding_size) => (num_nodes, embedding_size)
+        
+
+        batch.x = nodes_features + onfigurable_nodes_feat_embeddings          # (num_nodes, embedding_size) + (num_nodes, embedding_size) => (num_nodes, embedding_size)
         
         return batch 
-
-class ConfigurableNodeFeatureEmbeddings(torch.nn.Module):
-    
-    NODE_OP_CODES = 120
-    NODE_FEATS = 140
-    NODE_CONFIG_FEATS = 18
-
-    def __init__(self, 
-                 embedding_size: int = 128, 
-                 layer_norm_eps: float = 1e-12):
-        super().__init__()
-
-        self.embedding_size = embedding_size
-        self.layer_norm_eps = layer_norm_eps
-
-        self.node_feat_embeddings = torch.nn.Linear(self.NODE_CONFIG_FEATS, self.embedding_size, bias=False)
-        # TODO: Fix this!
-        self.layer_norm = torch.nn.LayerNorm(self.embedding_size, eps=self.layer_norm_eps)
-        
-    def forward(self, batch: Batch) -> torch.Tensor:
-
-        node_config_feat : torch.Tensor  = batch.config_feats                       # (num_nodes, NODE_CONFIG_FEATS)
-
-        node_config_feat_embeddings = self.node_feat_embeddings(node_config_feat)   # (num_nodes, NODE_CONFIG_FEATS) => (num_nodes, embedding_size)
-        node_config_feat_embeddings = self.layer_norm(node_config_feat_embeddings)  # (num_nodes, embedding_size) => (num_nodes, embedding_size)
-
-        batch.config_feats = node_config_feat_embeddings
-
-        return batch
 
 @register_network('layout_tpu_gnn')
 class LayoutTPUGNN(torch.nn.Module):
@@ -101,7 +81,6 @@ class LayoutTPUGNN(torch.nn.Module):
         self.output_dim = output_dim
         self.pooling_type = pooling_type
 
-        self.node_feat_embeddings = ConfigurableNodeFeatureEmbeddings(embedding_size=self.node_encoder_hidden_dim)
         self.node_embeddings = NodeEncoder(embedding_size=self.node_encoder_hidden_dim)
 
          
