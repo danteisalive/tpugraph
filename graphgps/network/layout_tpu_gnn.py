@@ -77,12 +77,16 @@ class LayoutTPUGNN(torch.nn.Module):
     to support specific handling of new conv layers.
     """
 
-    def __init__(self, hidden_dim : int = 128, output_dim : int = 1):
+    def __init__(self, 
+                 pooling_type: str = 'add', # default pooling is add for GNN head
+                 hidden_dim : int = 128, 
+                 output_dim : int = 1):
         super().__init__()
 
         self.node_encoder_hidden_dim = hidden_dim
         self.gnn_hidden_dim = hidden_dim 
         self.output_dim = output_dim
+        self.pooling_type = pooling_type
 
         self.node_embeddings = NodeEncoder(embedding_size=self.node_encoder_hidden_dim)
          
@@ -191,29 +195,56 @@ class LayoutTPUGNN(torch.nn.Module):
         else:
             raise ValueError("Model {} unavailable".format(model_type))
 
+
+    def _apply_index(self, batch):
+        assert batch.y is not None, "True labes should be passed to batch by `y` key"
+        return batch.graph_feature, batch.y
+    
     def forward(self, batch) -> torch.Tensor:
 
-        # execpt the last layer which is the prediction head, run other layers
+        
         """
         GNN Prediction Head (last layer in out model) has a mean pooling. We want to perform max+mean pooling.
         Thefore, before we pass the batch through the GNN Head, we first manually perofm mean+max pooling and 
         then pefrom the prediction
         """
+
+
         module_len = len(list(self.children()))
         for i, module in enumerate(self.children()):
+            # execpt the last layer which is the prediction head, run other layers
             if i < module_len - 1:
                 batch = module(batch)
-        
-        # Pefrorm GNN Head Prediction 
-        # INPUT:  batch.x.shape = (num_nodes, self.gnn_hidden_dim)
-        # INPUT:  batch.batch.shape = (num_nodes, 1)
-        batch_embed = tnn.global_max_pool(batch.x, batch.batch) + tnn.global_mean_pool(batch.x, batch.batch)
-        graph_embed = batch_embed / torch.norm(batch_embed, dim=-1, keepdim=True)
-        # OUTPUT: batch_embed.shape = (samples, self.gnn_hidden_dim)
-        
-        # INPUT: graph_embed.shape = (samples, self.gnn_hidden_dim)
-        graph_embed = list(self.post_mp.children())[0](graph_embed)
-        # OUTPUT: graph_embed.shape = (samples, 1)
 
-        # Each one of these samples is actually a score for the runtime of a segmented graph
-        return graph_embed  # graph_embed.shape = (samples, 1)
+        if self.pooling_type == 'mean+max':
+            # Pefrorm GNN Head Prediction 
+            # INPUT:  batch.x.shape = (num_nodes, self.gnn_hidden_dim)
+            # INPUT:  batch.batch.shape = (num_nodes, 1)
+            batch_embed = tnn.global_max_pool(batch.x, batch.batch) + tnn.global_mean_pool(batch.x, batch.batch)
+            graph_embed = batch_embed / torch.norm(batch_embed, dim=-1, keepdim=True)
+            # OUTPUT: batch_embed.shape = (samples, self.gnn_hidden_dim)
+            
+            # INPUT: graph_embed.shape = (samples, self.gnn_hidden_dim)
+            graph_embed = list(self.post_mp.children())[0](graph_embed)
+            # OUTPUT: graph_embed.shape = (samples, 1)
+            
+            # batch.graph_feature.shape = (samples, 1)
+            batch.graph_feature = graph_embed
+                
+            pred, label = self._apply_index(batch)
+            # Each one of these samples is actually a score for the runtime of a segmented graph
+                
+            # pred.shape = (samples, 1)
+            # label.shape = (samples, 1)
+            return pred, label
+        
+        elif self.pooling_type == cfg.model.graph_pooling:
+            
+            # directly gives us the final pred and true scores
+            pred, label = self.post_mp(batch)
+            
+            # pred.shape = (samples, 1)
+            # label.shape = (samples, 1)
+            return pred, label 
+        
+
