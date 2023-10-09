@@ -34,5 +34,6 @@ optim:
   max_epoch: 100
 share:
   dim_in: 128
+  num_sample_config: 32
 device: cuda
 accelerator : cuda

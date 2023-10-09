@@ -86,7 +86,7 @@ class TPUTileDataset(torch.utils.data.Dataset):
         
         tile_dict['config_runtime'] = tile_dict['config_runtime'][selected_configs].float()
         tile_dict['config_runtime'] /= tile_dict['config_runtime_normalizers'][selected_configs].float()
-        tile_dict['selected_idxs'] = torch.from_numpy(selected_configs)
+        selected_configs = torch.from_numpy(selected_configs)
 
         if "edge_index" not in tile_dict:
             raise ValueError(f"Can't find edge_index in the dataset!")

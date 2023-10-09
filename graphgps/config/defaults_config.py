@@ -15,6 +15,7 @@ def overwrite_defaults_cfg(cfg):
     cfg.train.mode = 'custom'  # 'standard' uses PyTorch-Lightning since PyG 2.1
     
     cfg.device = 'cuda'
+    cfg.share.num_sample_config = 32
 
     # Overwrite default dataset name
     cfg.dataset.name = 'none'

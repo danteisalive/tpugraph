@@ -11,6 +11,7 @@ import pytorch_lightning as pl
 from torch_geometric.data import Data
 from torch_geometric.data import Batch
 from torch import nn
+import torchmetrics as tm
 
 class MultiElementRankLoss(nn.Module):
     """
@@ -60,7 +61,35 @@ class MultiElementRankLoss(nn.Module):
             loss += self.calculate_rank_loss(outputs, config_runtime, config_idxs)
         return loss/ self.number_permutations
 
-
+class TileTopK(tm.Metric):
+    
+    higher_is_better = True
+    
+    def __init__(self, k:int=5) -> None:
+        super().__init__()
+        self.add_state("runtimes", default=[], dist_reduce_fx=None)
+        self.k = k
+        
+    def update(self, preds: torch.Tensor, target: torch.Tensor, config_attn_mask:torch.Tensor) -> None:
+        """
+        Update the metric state
+        Args:
+            preds: Tensor of shape (bs, seq_len) with the predicted runtimes orders
+            target: Tensor of shape (bs, seq_len) with the target runtimes
+            config_attn_mask: Tensor of shape (bs, seq_len) with 1 in the positions of the elements
+        """
+        best_runtimes = torch.where(config_attn_mask==1, target, torch.tensor(float('inf'))).min(1).values
+        masked_preds = torch.where(config_attn_mask==1, preds, torch.tensor(float('inf')))
+        pred_bottomk_indices = torch.topk(masked_preds, k=self.k, largest=False).indices
+        bs = preds.shape[0]
+        bottom_k_positions = torch.stack([torch.arange(bs).repeat_interleave(self.k).to(config_attn_mask.device), pred_bottomk_indices.view(-1)])
+        predicted_runtimes = target[bottom_k_positions[0], bottom_k_positions[1]].view(bs,self.k)
+        best_predicted_runtimes = predicted_runtimes.min(1).values
+        self.runtimes.append(best_predicted_runtimes/ best_runtimes)
+        
+    def compute(self) -> torch.Tensor:
+        return (2-torch.cat(self.runtimes)).mean()
+    
 class NodeEncoder(nn.Module):
     
     NODE_OP_CODES = 120
@@ -117,7 +146,7 @@ class NodeEncoder(nn.Module):
     
 
 
-@register_network('tpu_tile_model')
+# @register_network('tpu_tile_model')
 class TPUTileModel(nn.Module):
     
     NODE_OP_CODES = 120
@@ -125,13 +154,15 @@ class TPUTileModel(nn.Module):
     CONFIG_FEATS = 24
     NODE_CONFIG_FEATS = 18
 
-    def __init__(self, dim_in, dim_out):
+    def __init__(self, cfg):
         super().__init__()
 
         self.loss_fn = MultiElementRankLoss(margin=0.1, number_permutations=4)
 
-        # dim_in=cfg.share.dim_in
-        self.node_encoder = NodeEncoder(embedding_size=dim_in)
+        self.embedding_size = cfg.share.dim_in
+        self.dim_out=1
+        self.num_sample_config = cfg.share.num_sample_config
+        self.node_encoder = NodeEncoder(embedding_size=self.embedding_size)
 
 
         """
@@ -158,14 +189,12 @@ class TPUTileModel(nn.Module):
         )
         )
         """
+        dim_in=self.embedding_size
         self.pre_mp = None
         if cfg.gnn.layers_pre_mp > 0:
             self.pre_mp = GNNPreMP(
                 dim_in, cfg.gnn.dim_inner, cfg.gnn.layers_pre_mp)
             dim_in = cfg.gnn.dim_inner
-
-        # assert cfg.gnn.dim_inner == dim_in, \
-        #     "The inner and hidden dims must match."
 
         conv_model = self.build_conv_model(cfg.gnn.layer_type)
         layers = []
@@ -202,7 +231,7 @@ class TPUTileModel(nn.Module):
         # it is a MLP with two layers => nn.Linear(256,256) + ReLU() + nn.Linear(256,1)
         """
         GNNHead = register.head_dict[cfg.gnn.head]
-        self.post_mp = GNNHead(dim_in=dim_in, dim_out=dim_out)
+        self.post_mp = GNNHead(dim_in=dim_in, dim_out=self.dim_out)
 
     def build_conv_model(self, model_type):
         if model_type == 'gatedgcnconv':
@@ -214,21 +243,31 @@ class TPUTileModel(nn.Module):
         else:
             raise ValueError("Model {} unavailable".format(model_type))
 
-    def forward(self, batch : Batch, num_sample_config : int):
+    def forward(self, batch : Batch):
         
+        has_config_runtime = False
+        selected_configs : torch.Tensor = None
+        if hasattr(batch, "y"):
+            has_config_runtime = True
+            selected_configs = batch.selected_configs
+
         # First encode nodes features
         batch = self.node_encoder(batch)
 
         batch_list = batch.to_data_list()
         batch_train_list = []
         for graph_idx, graph in enumerate(batch_list):
-            for confix_idx in range(len(graph.y)):
+            for confix_idx in range(graph.num_configs[0]):
 
                 row, col, _ = graph.adj.coo() # adj is the same for lal the configs in the graph
                 config_edge_index = torch.stack([row, col], dim=0)          
                 config_x = graph.nodes_feats_embeddings[confix_idx]
-                config_y = graph.y[confix_idx]                
-                config_graph = Data(edge_index=config_edge_index, x=config_x, y=config_y)
+                
+                if has_config_runtime:
+                    config_y = graph.y[confix_idx]                
+                    config_graph = Data(edge_index=config_edge_index, x=config_x, y=config_y)
+                else:
+                    config_graph = Data(edge_index=config_edge_index, x=config_x)
                 
                 batch_train_list.append(config_graph)
 
@@ -242,62 +281,85 @@ class TPUTileModel(nn.Module):
 
         print("Before passing into GNN layers:")
         print(batch)
-
         batch = self.gnn_layers(batch)
 
         print("Before passing into Prediction Head:")
         print(batch)
         pred, true = self.post_mp(batch)        
 
+
         # calculate loss:
-        pred = pred.view(-1, num_sample_config)
-        true = true.view(-1, num_sample_config)
-        print(pred.shape, true.shape)
+        pred = pred.view(-1, self.num_sample_config)
+        true = true.view(-1, self.num_sample_config)
+        selected_configs = selected_configs.view(-1, self.num_sample_config)
+        print(pred.shape, true.shape, selected_configs.shape)
 
-        return pred, true
+        outputs = {'outputs': pred, 'order': torch.argsort(true, dim=1)}
+        if has_config_runtime:
+            loss = 0
+            loss += self.loss_fn(pred, true, selected_configs)
+            outputs['loss'] = loss
+
+        print(outputs['loss'])
+        assert(0)
+
+        return outputs
         
 
 
-# class LightningWrapper(pl.LightningModule):
-#     def __init__(self, model:nn.Module):
-#         super().__init__()
-#         self.model = model
-#         # self.topk = TileTopK()
+class LightningWrapper(pl.LightningModule):
+    def __init__(self, model:nn.Module):
+        super().__init__()
+        self.model = model
+        self.topk = TileTopK()
         
-#     def forward(self, x):
-#         return self.model(x)
+    def forward(self, batch):
+        print("LightningModule Forward: ")
+        print(batch)
+        return self.model(batch)
 
-#     def training_step(self, batch, batch_idx):
-#         outputs = self.model(**batch)
-#         return outputs['loss']
+    def training_step(self, batch, batch_idx):
+        assert(0)
+        outputs = self.model(**batch)
+        return outputs['loss']
 
-#     def validation_step(self, batch, batch_idx):
-#         outputs = self.model(**batch)
-#         loss = outputs['loss']
-#         self.log("val_loss", loss, prog_bar=True)
-#         config_attn_mask = torch.ones_like(batch['config_runtime'], device=batch['config_runtime'].device)
-#         self.topk.update(outputs['outputs'], batch['config_runtime'], config_attn_mask)
-#         return loss
+    def validation_step(self, batch, batch_idx):
+        assert(0)
+        outputs = self.model(**batch)
+        loss = outputs['loss']
+        self.log("val_loss", loss, prog_bar=True)
+        config_attn_mask = torch.ones_like(batch['config_runtime'], device=batch['config_runtime'].device)
+        self.topk.update(outputs['outputs'], batch['config_runtime'], config_attn_mask)
+        return loss
     
-#     def on_validation_end(self) -> None:
-#         topk = self.topk.compute()
-#         self.print(f"topk {topk:.3f}")
-#         self.topk.reset()
-#         return super().on_validation_end()
+    def on_validation_end(self) -> None:
+        assert(0)
+        topk = self.topk.compute()
+        self.print(f"topk {topk:.3f}")
+        self.topk.reset()
+        return super().on_validation_end()
 
-#     def test_step(self, batch, batch_idx):
-#         x, y = batch
-#         y_hat = self.model(x)
-#         loss = self.model.loss(y_hat, y)
-#         self.log("test_loss", loss, prog_bar=True)
-#         return loss
+    def test_step(self, batch, batch_idx):
+        assert(0)
+        x, y = batch
+        y_hat = self.model(x)
+        loss = self.model.loss(y_hat, y)
+        self.log("test_loss", loss, prog_bar=True)
+        return loss
 
-#     def configure_optimizers(self):
-#         optimizer = torch.optim.AdamW(self.trainer.model.parameters(), lr=1e-3)
-#         return optimizer
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(self.trainer.model.parameters(), lr=1e-3)
+        return optimizer
 
 
 
 
+def get_model(cfg):
+
+    model = TPUTileModel(cfg)
+    model = LightningWrapper(model)
+    model.to(torch.device(cfg.device))
+
+    return model
 
 

@@ -35,6 +35,8 @@ from torch.nn import functional as F
 from torch_sparse import SparseTensor
 
 
+from graphgps.network.tpu_tile_model import get_model
+
 def new_optimizer_config(cfg):
     return OptimizerConfig(optimizer=cfg.optim.optimizer,
                            base_lr=cfg.optim.base_lr,
@@ -133,26 +135,25 @@ if __name__ == '__main__':
     
     train_dataset = TPUTileDataset(data_dir="/home/cc/data/tpugraphs/npz", split_name='train')
     train_loader  = DataLoader(train_dataset, batch_size=cfg.train.batch_size, shuffle=True)
-    model = create_model() # Standard GCN/SAGE
+    model = get_model(cfg=cfg)
 
-    print(model)
+    # print(model)
     # Print model info
     logging.info(model)
     logging.info(cfg)
     
     for step, batch in enumerate(train_loader):
 
-        print("Before Preprocessing:")
-        print(batch)
+        # print("Before Preprocessing:")
+        # print(batch)
 
-        train_batch = preprocess_batch(batch)
-        train_batch.to(torch.device(cfg.device))
+        batch = preprocess_batch(batch)
+        batch.to(torch.device(cfg.device))
 
-        print("After Preprocessing:")
-        print(train_batch)
+        # print("After Preprocessing:")
+        # print(batch)
 
-        output = model(train_batch, 
-                       train_dataset.num_sample_config)        
+        output = model(batch)        
         
         if step == 0:
             break
