@@ -7,10 +7,59 @@ from torch_geometric.graphgym.register import register_network
 from torch_geometric.graphgym.models.layer import SAGEConv, new_layer_config
 from graphgps.layer.gatedgcn_layer import GatedGCNLayer
 from graphgps.layer.gine_conv_layer import GINEConvLayer
-
+import pytorch_lightning as pl
 from torch_geometric.data import Data
 from torch_geometric.data import Batch
 from torch import nn
+
+class MultiElementRankLoss(nn.Module):
+    """
+    Loss function that compares the output of the model with the output of the model with a permutation of the elements
+    """
+    
+    def __init__(self, margin:float=0.0, number_permutations:int = 1) -> None:
+        super().__init__()
+        self.loss_fn = torch.nn.MarginRankingLoss(margin=margin, reduction = 'none')
+        self.number_permutations = number_permutations
+    
+    def calculate_rank_loss(self,
+                            outputs: torch.Tensor,
+                            config_runtime: torch.Tensor,
+                            config_idxs: torch.Tensor
+                            ):
+        """
+        Generates a permutation of the predictions and targets and calculates the loss MarginRankingLoss against the permutation
+        Args:
+            outputs: Tensor of shape (bs, seq_len) with the outputs of the model
+            config_runtime: Tensor of shape (bs, seq_len) with the runtime of the model
+            config_mask: Tensor of shape (bs, seq_len) with 1 in the positions of the elements
+            and 0 in the positions of the padding
+        Returns:
+            loss: Tensor of shape (bs, seq_len) with the loss for each element in the batch
+        """
+        bs, num_configs = outputs.shape
+        permutation = torch.randperm(num_configs) 
+        permuted_idxs = config_idxs[:, permutation]
+        # We mask those cases where we compare the same configuration
+        config_mask = torch.where(config_idxs != permuted_idxs, 1, 0)
+        permuted_runtime = config_runtime[:, permutation]
+        labels = 2*((config_runtime - permuted_runtime) > 0) -1
+        permuted_output = outputs[:, permutation]
+        loss = self.loss_fn(outputs.view(-1,1), permuted_output.view(-1,1), labels.view(-1,1))
+        loss = loss.view(bs, num_configs) * config_mask
+        return loss.mean()
+                
+    
+    def forward(self,
+                outputs: torch.Tensor,
+                config_runtime: torch.Tensor,
+                config_idxs: torch.Tensor
+                ):
+        loss = 0 
+        for _ in range(self.number_permutations):
+            loss += self.calculate_rank_loss(outputs, config_runtime, config_idxs)
+        return loss/ self.number_permutations
+
 
 class NodeEncoder(nn.Module):
     
@@ -78,6 +127,8 @@ class TPUTileModel(nn.Module):
 
     def __init__(self, dim_in, dim_out):
         super().__init__()
+
+        self.loss_fn = MultiElementRankLoss(margin=0.1, number_permutations=4)
 
         # dim_in=cfg.share.dim_in
         self.node_encoder = NodeEncoder(embedding_size=dim_in)
@@ -163,7 +214,7 @@ class TPUTileModel(nn.Module):
         else:
             raise ValueError("Model {} unavailable".format(model_type))
 
-    def forward(self, batch : Batch):
+    def forward(self, batch : Batch, num_sample_config : int):
         
         # First encode nodes features
         batch = self.node_encoder(batch)
@@ -185,7 +236,6 @@ class TPUTileModel(nn.Module):
         
         print("Before passing into PreMP:")
         print(batch)
-        print(batch.y)
 
         if self.pre_mp is not None:
             batch = self.pre_mp(batch)
@@ -197,12 +247,54 @@ class TPUTileModel(nn.Module):
 
         print("Before passing into Prediction Head:")
         print(batch)
-        pred, true = self.post_mp(batch)
+        pred, true = self.post_mp(batch)        
 
+        # calculate loss:
+        pred = pred.view(-1, num_sample_config)
+        true = true.view(-1, num_sample_config)
+        print(pred.shape, true.shape)
 
         return pred, true
         
 
+
+# class LightningWrapper(pl.LightningModule):
+#     def __init__(self, model:nn.Module):
+#         super().__init__()
+#         self.model = model
+#         # self.topk = TileTopK()
+        
+#     def forward(self, x):
+#         return self.model(x)
+
+#     def training_step(self, batch, batch_idx):
+#         outputs = self.model(**batch)
+#         return outputs['loss']
+
+#     def validation_step(self, batch, batch_idx):
+#         outputs = self.model(**batch)
+#         loss = outputs['loss']
+#         self.log("val_loss", loss, prog_bar=True)
+#         config_attn_mask = torch.ones_like(batch['config_runtime'], device=batch['config_runtime'].device)
+#         self.topk.update(outputs['outputs'], batch['config_runtime'], config_attn_mask)
+#         return loss
+    
+#     def on_validation_end(self) -> None:
+#         topk = self.topk.compute()
+#         self.print(f"topk {topk:.3f}")
+#         self.topk.reset()
+#         return super().on_validation_end()
+
+#     def test_step(self, batch, batch_idx):
+#         x, y = batch
+#         y_hat = self.model(x)
+#         loss = self.model.loss(y_hat, y)
+#         self.log("test_loss", loss, prog_bar=True)
+#         return loss
+
+#     def configure_optimizers(self):
+#         optimizer = torch.optim.AdamW(self.trainer.model.parameters(), lr=1e-3)
+#         return optimizer
 
 
 

@@ -97,10 +97,10 @@ def preprocess_batch(batch: Batch):
     """
     max_nodes_length = max([graph.nodes_opcode.shape[0] for graph in batch_list])
     
-    print("max_nodes_length: ", max_nodes_length)
-    print("Before Padding")
-    for graph in batch_list:
-        print(graph.nodes_feats.shape, graph.nodes_opcode.shape, graph.configurable_nodes_feat.shape, graph.y.shape,)
+    # print("max_nodes_length: ", max_nodes_length)
+    # print("Before Padding")
+    # for graph in batch_list:
+    #     print(graph.nodes_feats.shape, graph.nodes_opcode.shape, graph.configurable_nodes_feat.shape, graph.y.shape,)
     
     for graph in batch_list:
         
@@ -112,9 +112,9 @@ def preprocess_batch(batch: Batch):
         graph.validate(raise_on_error=True)
         processed_batch_list.append(graph)
     
-    print("After Padding")
-    for graph in batch_list:
-        print(graph.nodes_feats.shape, graph.nodes_opcode.shape, graph.configurable_nodes_feat.shape, graph.y.shape,)
+    # print("After Padding")
+    # for graph in batch_list:
+    #     print(graph.nodes_feats.shape, graph.nodes_opcode.shape, graph.configurable_nodes_feat.shape, graph.y.shape,)
         
     
     return Batch.from_data_list(processed_batch_list)
@@ -144,24 +144,15 @@ if __name__ == '__main__':
 
         print("Before Preprocessing:")
         print(batch)
-        # batch_list = batch.to_data_list()
-        # for graph in batch_list:
-        #     print(graph)
 
-        batch = preprocess_batch(batch)
-        batch.to(torch.device(cfg.device))
+        train_batch = preprocess_batch(batch)
+        train_batch.to(torch.device(cfg.device))
 
         print("After Preprocessing:")
-        print(batch)
-        # batch_list = batch.to_data_list()
-        # for graph in batch_list:
-        #     print(graph)
+        print(train_batch)
 
-        pred, true = model(batch)        
-
-        print("After Model:")
-        print(pred)
-        print(true)
+        output = model(train_batch, 
+                       train_dataset.num_sample_config)        
         
         if step == 0:
             break

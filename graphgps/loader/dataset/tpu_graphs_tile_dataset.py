@@ -43,6 +43,10 @@ class TPUTileDataset(torch.utils.data.Dataset):
         self.num_configs = num_configs
         self.max_configs = max_configs
         self.split_name = split_name
+    
+    @property
+    def num_sample_config(self) -> int:
+        return self.num_configs
         
     def __len__(self) -> int:
         return len(self.df)
@@ -89,6 +93,8 @@ class TPUTileDataset(torch.utils.data.Dataset):
         
         # TODO: I fel like source and destionation for these nodes are incorrect!
         edge_index = tile_dict["edge_index"].T
+
+        #TODO: if split_name == 'test, then we don't have runtimes
         runtime = tile_dict["config_runtime"]            
             
         if self.split_name != 'test':
