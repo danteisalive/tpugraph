@@ -13,6 +13,8 @@ from torch_geometric.data import Batch
 from torch import nn
 import torchmetrics as tm
 
+from typing import Optional
+
 class MultiElementRankLoss(nn.Module):
     """
     Loss function that compares the output of the model with the output of the model with a permutation of the elements
@@ -112,20 +114,20 @@ class NodeEncoder(nn.Module):
         self.config_feat_embeddings = nn.Linear(self.CONFIG_FEATS, self.embedding_size, bias=False)
         self.config_layer_norm = nn.LayerNorm(self.embedding_size, eps=self.layer_norm_eps)
     
-    def forward(self, batch: Batch) -> Batch:
+    def forward(self,                 
+                node_opcode : torch.Tensor, # (bs, num_nodes)
+                node_feat : torch.Tensor,   # (bs, num_nodes, NODE_FEATS(140))
+                node_config_feat : torch.Tensor, # (bs, num_configs, 1, CONFIG_FEATS(24))
+                ):
         
-        batch_list = batch.to_data_list()
         
-        nodes_opcode = torch.stack([graph.nodes_opcode for graph in batch_list], dim=0) # (bs, num_nodes)
-        opcode_embeddings = self.node_opcode_embeddings(nodes_opcode)  # (bs, num_nodes, embedding_size)
+        opcode_embeddings = self.node_opcode_embeddings(node_opcode)  # (bs, num_nodes, embedding_size)
         
-        nodes_feat = torch.stack([graph.nodes_feats for graph in batch_list]) # (bs, num_nodes, NODE_FEATS(140))
-        nodes_feats_embeddings =  self.linear(nodes_feat) # (bs, num_nodes, embedding_size)
+        nodes_feats_embeddings =  self.linear(node_feat) # (bs, num_nodes, embedding_size)
         nodes_feats_embeddings = opcode_embeddings + nodes_feats_embeddings # (bs, num_nodes, embedding_size)
         nodes_feats_embeddings = self.nodes_layer_norm(nodes_feats_embeddings) # (bs, num_nodes, embedding_size)
         
-        config_feats = torch.stack([graph.configurable_nodes_feat for graph in batch_list], dim=0)  # (bs, num_configs, 1, CONFIG_FEATS)
-        config_feats_embeddings = self.config_feat_embeddings(config_feats)  # (bs, num_configs, 1, embedding_size)
+        config_feats_embeddings = self.config_feat_embeddings(node_config_feat)  # (bs, num_configs, 1, embedding_size)
         config_feats_embeddings = self.config_layer_norm(config_feats_embeddings) # (bs, num_configs, 1, embedding_size)
         
         num_nodes = nodes_feats_embeddings.shape[1]
@@ -135,14 +137,7 @@ class NodeEncoder(nn.Module):
         nodes_feats_embeddings = nodes_feats_embeddings.unsqueeze(1).repeat(1, num_configs, 1, 1) # (bs, num_configs, num_nodes, embedding_size)
         nodes_feats_embeddings += config_feats_embeddings # (bs, num_configs, num_nodes, embedding_size)
         
-        assert nodes_feats_embeddings.shape[0] == len(batch_list), "batch sizes are not consistent! "
-        processed_batch_list = []
-        for idx, graph in enumerate(batch_list):
-            graph.nodes_feats_embeddings = nodes_feats_embeddings[idx, ...]
-            graph.validate(raise_on_error=True)
-            processed_batch_list.append(graph)
-        
-        return Batch.from_data_list(processed_batch_list) 
+        return nodes_feats_embeddings
     
 
 
@@ -243,16 +238,25 @@ class TPUTileModel(nn.Module):
         else:
             raise ValueError("Model {} unavailable".format(model_type))
 
-    def forward(self, batch : Batch):
+    def forward(self,
+                node_opcode : torch.Tensor, # (bs, num_nodes)
+                node_feat : torch.Tensor,   # (bs, num_nodes, NODE_FEATS(140))
+                node_config_feat : torch.Tensor, # (bs, num_configs, 1, CONFIG_FEATS(24))
+                edge_index : torch.Tensor, # (bs, num_nodes, 2)
+                selected_configs : Optional[torch.Tensor] = None, 
+                config_runtime : Optional[torch.Tensor] = None,
+                ):
         
-        has_config_runtime = False
-        selected_configs : torch.Tensor = None
-        if hasattr(batch, "y"):
-            has_config_runtime = True
-            selected_configs = batch.selected_configs
 
-        # First encode nodes features
-        batch = self.node_encoder(batch)
+
+
+        # First encode nodes+ config features
+        batch = self.node_encoder(node_opcode,
+                                  node_feat,
+                                  node_config_feat,
+                                  )
+
+        assert(0)
 
         batch_list = batch.to_data_list()
         batch_train_list = []
@@ -263,11 +267,11 @@ class TPUTileModel(nn.Module):
                 config_edge_index = torch.stack([row, col], dim=0)          
                 config_x = graph.nodes_feats_embeddings[confix_idx]
                 
-                if has_config_runtime:
+                if config_runtime is None:
+                    config_graph = Data(edge_index=config_edge_index, x=config_x)
+                else:
                     config_y = graph.y[confix_idx]                
                     config_graph = Data(edge_index=config_edge_index, x=config_x, y=config_y)
-                else:
-                    config_graph = Data(edge_index=config_edge_index, x=config_x)
                 
                 batch_train_list.append(config_graph)
 
@@ -295,7 +299,7 @@ class TPUTileModel(nn.Module):
         print(pred.shape, true.shape, selected_configs.shape)
 
         outputs = {'outputs': pred, 'order': torch.argsort(true, dim=1)}
-        if has_config_runtime:
+        if config_runtime is not None:
             loss = 0
             loss += self.loss_fn(pred, true, selected_configs)
             outputs['loss'] = loss
@@ -314,8 +318,7 @@ class LightningWrapper(pl.LightningModule):
         self.topk = TileTopK()
         
     def forward(self, batch):
-        print("LightningModule Forward: ")
-        print(batch)
+        assert(0)
         return self.model(batch)
 
     def training_step(self, batch, batch_idx):
@@ -324,8 +327,9 @@ class LightningWrapper(pl.LightningModule):
         return outputs['loss']
 
     def validation_step(self, batch, batch_idx):
-        assert(0)
+        
         outputs = self.model(**batch)
+        assert(0)
         loss = outputs['loss']
         self.log("val_loss", loss, prog_bar=True)
         config_attn_mask = torch.ones_like(batch['config_runtime'], device=batch['config_runtime'].device)

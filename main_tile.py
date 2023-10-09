@@ -22,17 +22,18 @@ from torch_geometric.graphgym.utils.device import auto_select_device
 from torch_geometric.graphgym.register import train_dict
 from torch_geometric import seed_everything
 import torch.nn as nn
+import pytorch_lightning as pl
 
 
 from graphgps.finetuning import load_pretrained_model_cfg, \
     init_model_from_pretrained
 from graphgps.logger import create_logger
 
-from graphgps.loader.dataset.tpu_graphs_tile_dataset import TPUTileDataset
-from torch_geometric.loader import DataLoader
+from graphgps.loader.dataset.tpu_graphs_tile_dataset import (TPUTileDataset, TileCollator)
+from torch.utils.data import  DataLoader
 from torch_geometric.data import Batch
 from torch.nn import functional as F
-from torch_sparse import SparseTensor
+
 
 
 from graphgps.network.tpu_tile_model import get_model
@@ -83,43 +84,6 @@ def custom_set_run_dir(cfg, run_id):
     else:
         makedirs_rm_exist(cfg.run_dir)
 
-def preprocess_batch(batch: Batch):
-    
-    batch_list = batch.to_data_list()
-    processed_batch_list = []
-
-    
-    """
-    node_feat (80, 140)
-    node_opcode (80,)
-    edge_index (86, 2)
-    config_feat (3246, 24)
-    config_runtime (3246,)
-    config_runtime_normalizers (3246,)
-    """
-    max_nodes_length = max([graph.nodes_opcode.shape[0] for graph in batch_list])
-    
-    # print("max_nodes_length: ", max_nodes_length)
-    # print("Before Padding")
-    # for graph in batch_list:
-    #     print(graph.nodes_feats.shape, graph.nodes_opcode.shape, graph.configurable_nodes_feat.shape, graph.y.shape,)
-    
-    for graph in batch_list:
-        
-        graph.nodes_opcode = F.pad(graph.nodes_opcode, (0, max_nodes_length - graph.nodes_opcode.shape[0]), value=121).long()
-        graph.nodes_feats =  F.pad(graph.nodes_feats, (0,0,0, max_nodes_length - graph.nodes_feats.shape[0]), value=0)
-        graph.configurable_nodes_feat = graph.configurable_nodes_feat.view(graph.num_configs, graph.num_configurable_nodes, -1) # (num_configs, 1, CONFIG_FEAT)        
-        graph.adj = SparseTensor(row=graph.edge_index[0], col=graph.edge_index[1], sparse_sizes=(max_nodes_length, max_nodes_length))
-        
-        graph.validate(raise_on_error=True)
-        processed_batch_list.append(graph)
-    
-    # print("After Padding")
-    # for graph in batch_list:
-    #     print(graph.nodes_feats.shape, graph.nodes_opcode.shape, graph.configurable_nodes_feat.shape, graph.y.shape,)
-        
-    
-    return Batch.from_data_list(processed_batch_list)
 
 if __name__ == '__main__':
     # Load cmd line args
@@ -134,27 +98,34 @@ if __name__ == '__main__':
     
     
     train_dataset = TPUTileDataset(data_dir="/home/cc/data/tpugraphs/npz", split_name='train')
-    train_loader  = DataLoader(train_dataset, batch_size=cfg.train.batch_size, shuffle=True)
+    valid_dataset = TPUTileDataset(data_dir="/home/cc/data/tpugraphs/npz", split_name='valid')
+    train_dataloader = DataLoader(train_dataset, collate_fn=TileCollator(), batch_size=cfg.train.batch_size, shuffle=True)
+    valid_dataloader = DataLoader(valid_dataset, collate_fn=TileCollator(), batch_size=cfg.train.batch_size)
+    
     model = get_model(cfg=cfg)
 
     # print(model)
-    # Print model info
     logging.info(model)
     logging.info(cfg)
     
-    for step, batch in enumerate(train_loader):
+    pl.seed_everything(42)
+    trainer_config = dict(
+        max_epochs= 45,
+        precision= 32,
+        gradient_clip_val= 1.0,
+        accumulate_grad_batches= 4,
+        check_val_every_n_epoch= 10)
 
-        # print("Before Preprocessing:")
-        # print(batch)
+    torch.set_float32_matmul_precision("medium")
+    trainer = pl.Trainer(**trainer_config,)
+    trainer.fit(model, train_dataloader, valid_dataloader)
 
-        batch = preprocess_batch(batch)
-        batch.to(torch.device(cfg.device))
+    # for step, batch in enumerate(train_dataloader):
 
-        # print("After Preprocessing:")
-        # print(batch)
+    #     print(batch)
 
-        output = model(batch)        
-        
-        if step == 0:
-            break
+    #     if step==0:
+    #         break
+
+
     
