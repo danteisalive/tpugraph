@@ -23,6 +23,7 @@ from torch_geometric.graphgym.register import train_dict
 from torch_geometric import seed_everything
 import torch.nn as nn
 
+
 from graphgps.finetuning import load_pretrained_model_cfg, \
     init_model_from_pretrained
 from graphgps.logger import create_logger
@@ -126,23 +127,41 @@ if __name__ == '__main__':
     load_cfg(cfg, args)
     custom_set_out_dir(cfg, args.cfg_file, cfg.name_tag)
     dump_cfg(cfg)
-
+    
+    loggers = create_logger()
+    
+    
     train_dataset = TPUTileDataset(data_dir="/home/cc/data/tpugraphs/npz", split_name='train')
     train_loader  = DataLoader(train_dataset, batch_size=cfg.train.batch_size, shuffle=True)
-
     model = create_model() # Standard GCN/SAGE
 
+    print(model)
+    # Print model info
+    logging.info(model)
+    logging.info(cfg)
+    
     for step, batch in enumerate(train_loader):
-            
+
+        print("Before Preprocessing:")
+        print(batch)
+        # batch_list = batch.to_data_list()
+        # for graph in batch_list:
+        #     print(graph)
+
         batch = preprocess_batch(batch)
         batch.to(torch.device(cfg.device))
-                    
-        batch = model(batch)
+
+        print("After Preprocessing:")
         print(batch)
-        
-        batch_list = batch.to_data_list()
-        for graph in batch_list:
-            print(graph)
+        # batch_list = batch.to_data_list()
+        # for graph in batch_list:
+        #     print(graph)
+
+        pred, true = model(batch)        
+
+        print("After Model:")
+        print(pred)
+        print(true)
         
         if step == 0:
             break
