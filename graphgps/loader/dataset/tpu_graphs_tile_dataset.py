@@ -63,87 +63,18 @@ class TPUTileDataset(torch.utils.data.Dataset):
         tile_dict =  dict(np.load(path))
         tile_dict = {k: torch.from_numpy(v) for k, v in tile_dict.items()}
         return tile_dict    
-    
-    # def __getitem__(self, idx:int, selected_configs:List[int]=None):
-
-        
-    #     """
-    #     node_feat (80, 140)
-    #     node_opcode (80,)
-    #     edge_index (86, 2)
-    #     config_feat (3246, 24)
-    #     config_runtime (3246,)
-    #     config_runtime_normalizers (3246,)
-    #     """
-        
-    #     tile_dict = self._tile_loader(self.df.paths[idx])
-    #     if selected_configs is None:
-    #         selected_configs = self.select_configs(tile_dict['config_feat'].shape[0])
-            
-    #     tile_dict['node_config_feat'] = tile_dict.pop('config_feat')[selected_configs]
-    #     tile_dict['node_config_feat'] = tile_dict['node_config_feat'].unsqueeze(1)
-        
-    #     tile_dict['config_runtime'] = tile_dict['config_runtime'][selected_configs].float()
-    #     tile_dict['config_runtime'] /= tile_dict['config_runtime_normalizers'][selected_configs].float()
-    #     selected_configs = torch.from_numpy(selected_configs)
-
-    #     if "edge_index" not in tile_dict:
-    #         raise ValueError(f"Can't find edge_index in the dataset!")
-        
-    #     # TODO: I fel like source and destionation for these nodes are incorrect!
-    #     edge_index = tile_dict["edge_index"].T
-
-    #     #TODO: if split_name == 'test, then we don't have runtimes
-    #     runtime = tile_dict["config_runtime"]            
-            
-    #     if self.split_name != 'test':
-    #         assert (runtime == 0).all().item() is False, "Loader Error: all emelents are 0!"
-    #         assert (runtime == 0).any().item() is False, "Loader Error: one emelent is 0!"
-        
-    #     tile_dict['node_config_ids'] = torch.zeros((1,))
-        
-    #     nodes_feats = tile_dict["node_feat"]
-    #     nodes_opcode = tile_dict["node_opcode"]
-        
-    #     assert (nodes_opcode >= 121).any().item() is False, "Loader Error: op code >= 121!"
-                    
-    #     configurable_nodes_feat = tile_dict["node_config_feat"]
-    #     configurable_nodes_feat = configurable_nodes_feat.view(-1, configurable_nodes_feat.shape[-1])
-                    
-    #     configurable_nodes_ids = tile_dict["node_config_ids"]
-                    
-    #     num_configs = torch.tensor(tile_dict["node_config_feat"].shape[0])
-    #     num_configurable_nodes = torch.tensor(tile_dict["node_config_feat"].shape[1])
-    #     num_nodes = torch.tensor(tile_dict["node_feat"].shape[0])
-
-
-    #     data = Data(edge_index=edge_index, 
-    #                 nodes_feats=nodes_feats, 
-    #                 nodes_opcode=nodes_opcode, 
-    #                 configurable_nodes_feat=configurable_nodes_feat, 
-    #                 configurable_nodes_ids=configurable_nodes_ids,
-    #                 num_configs=num_configs, 
-    #                 num_configurable_nodes=num_configurable_nodes, 
-    #                 y=runtime, 
-    #                 num_nodes=num_nodes,
-    #                 selected_configs=selected_configs,
-    #                )
-        
-    #     data.validate(raise_on_error=True)
-        
-    #     return data
 
     def __getitem__(self, idx:int, selected_configs:List[int]=None):
 
         
-    #     """
-    #     node_feat (80, 140)
-    #     node_opcode (80,)
-    #     edge_index (86, 2)
-    #     config_feat (3246, 24)
-    #     config_runtime (3246,)
-    #     config_runtime_normalizers (3246,)
-    #     """
+        """
+        node_feat (80, 140)
+        node_opcode (80,)
+        edge_index (86, 2)
+        config_feat (3246, 24)
+        config_runtime (3246,)
+        config_runtime_normalizers (3246,)
+        """
         
         tile_dict = self._tile_loader(self.df.paths[idx])
         if selected_configs is None:
@@ -190,7 +121,6 @@ class TileCollator:
         output['selected_configs'] = torch.stack([elem['selected_configs'] for elem in batch], dim=0)
 
         output['edge_index'] = pad_sequence([elem['edge_index'] for elem in batch], batch_first=True, padding_value=-1)
-
         # there will be padding if number of sample config runtimes are different
         if self.targets:
             output['config_runtime'] = pad_sequence([elem['config_runtime'].float() for elem in batch], batch_first=True)

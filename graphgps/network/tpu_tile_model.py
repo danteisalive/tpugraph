@@ -12,6 +12,7 @@ from torch_geometric.data import Data
 from torch_geometric.data import Batch
 from torch import nn
 import torchmetrics as tm
+from torch_sparse import SparseTensor
 
 from typing import Optional
 
@@ -242,41 +243,48 @@ class TPUTileModel(nn.Module):
                 node_opcode : torch.Tensor, # (bs, num_nodes)
                 node_feat : torch.Tensor,   # (bs, num_nodes, NODE_FEATS(140))
                 node_config_feat : torch.Tensor, # (bs, num_configs, 1, CONFIG_FEATS(24))
-                edge_index : torch.Tensor, # (bs, num_nodes, 2)
-                selected_configs : Optional[torch.Tensor] = None, 
-                config_runtime : Optional[torch.Tensor] = None,
+                edge_index : torch.Tensor, # (bs, UNK, 2)
+                selected_configs : Optional[torch.Tensor] = None, # (bs, num_configs)
+                config_runtime : Optional[torch.Tensor] = None, # (bs, num_configs)
                 ):
         
 
 
 
         # First encode nodes+ config features
-        batch = self.node_encoder(node_opcode,
+        # node_encoder_output.shape = (bs, num_configs, num_nodes, embedding_size)
+        node_encoder_output = self.node_encoder(node_opcode,
                                   node_feat,
                                   node_config_feat,
-                                  )
+                                  ) 
 
-        assert(0)
+        batch_size = node_encoder_output.shape[0]
+        num_configs = node_encoder_output.shape[1]
+        num_nodes = node_encoder_output.shape[2]
 
-        batch_list = batch.to_data_list()
         batch_train_list = []
-        for graph_idx, graph in enumerate(batch_list):
-            for confix_idx in range(graph.num_configs[0]):
+        for batch_idx in range(batch_size):
 
-                row, col, _ = graph.adj.coo() # adj is the same for lal the configs in the graph
-                config_edge_index = torch.stack([row, col], dim=0)          
-                config_x = graph.nodes_feats_embeddings[confix_idx]
+            edges = edge_index[batch_idx]
+            # Create a mask for elements equal to [-1, -1] in edge_index
+            edges_mask = (edges[:, 0] != -1) | (edges[:, 1] != -1)
+            # Apply the mask to filter out elements
+            config_edge_index = edges[edges_mask].T
+
+            for config_idx in range(num_configs):
+
+                config_x = node_encoder_output[batch_idx][config_idx]
                 
                 if config_runtime is None:
                     config_graph = Data(edge_index=config_edge_index, x=config_x)
                 else:
-                    config_y = graph.y[confix_idx]                
+                    config_y = config_runtime[batch_idx][config_idx]             
                     config_graph = Data(edge_index=config_edge_index, x=config_x, y=config_y)
                 
                 batch_train_list.append(config_graph)
 
         batch = Batch.from_data_list(batch_train_list)
-        
+            
         print("Before passing into PreMP:")
         print(batch)
 
@@ -293,9 +301,9 @@ class TPUTileModel(nn.Module):
 
 
         # calculate loss:
-        pred = pred.view(-1, self.num_sample_config)
-        true = true.view(-1, self.num_sample_config)
-        selected_configs = selected_configs.view(-1, self.num_sample_config)
+        pred = pred.view(-1, num_configs)
+        true = true.view(-1, num_configs)
+        selected_configs = selected_configs.view(-1, num_configs)
         print(pred.shape, true.shape, selected_configs.shape)
 
         outputs = {'outputs': pred, 'order': torch.argsort(true, dim=1)}
