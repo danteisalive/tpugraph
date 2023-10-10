@@ -26,6 +26,9 @@ class TPUTileDataset(torch.utils.data.Dataset):
             paths = lambda df: df.paths.apply(lambda x: str(x))
         )
         return tile_df
+    
+    def get_tile_df(self):
+        return self.df
 
     def __init__(self, 
                  data_dir : str = "/home/cc/data/tpugraphs/npz",
@@ -35,10 +38,11 @@ class TPUTileDataset(torch.utils.data.Dataset):
                 ):
         
         self.data_dir = data_dir
-        df = self._generate_tile_df()
 
+        df = self._generate_tile_df()
         query = f"split == '{split_name}'"
         self.df = df.query(query).reset_index(drop=True)
+        
         self.num_configs = num_configs
         self.max_configs = max_configs
         self.split_name = split_name

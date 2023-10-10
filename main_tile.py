@@ -23,7 +23,9 @@ from torch_geometric.graphgym.register import train_dict
 from torch_geometric import seed_everything
 import torch.nn as nn
 import pytorch_lightning as pl
-
+from tqdm import tqdm
+import numpy as np
+import pandas as pd
 
 from graphgps.finetuning import load_pretrained_model_cfg, \
     init_model_from_pretrained
@@ -110,7 +112,7 @@ if __name__ == '__main__':
     
     pl.seed_everything(42)
     trainer_config = dict(
-        max_epochs= 45,
+        max_epochs= 1,
         precision= 32,
         gradient_clip_val= 1.0,
         accumulate_grad_batches= 1,
@@ -122,3 +124,42 @@ if __name__ == '__main__':
 
 
     
+    def chunk_batch(batch, start_idx, end_idx):
+        output = {k:batch[k] for k in ['node_opcode', 'node_feat', 'edge_index']}
+        output['node_config_feat'] = batch['node_config_feat'][:, start_idx: end_idx]
+        return output
+
+    test_tile_dataset = TPUTileDataset(data_dir="/home/cc/data/tpugraphs/npz", split_name='test', num_configs=-1)
+    test_dataloader = DataLoader(test_tile_dataset, batch_size=1, shuffle=False, num_workers=0, collate_fn=TileCollator(targets=False))
+
+    device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+    model.to(device)
+    model = model.eval()
+
+    pred_order = []
+    for batch in tqdm(test_dataloader):
+        batch.pop('selected_configs') # we don't need this in test phase as we don't have the runtimes
+        batch = {k: v.to(device) for k, v in batch.items()}
+        num_configs = batch['node_config_feat'].shape[1]
+        # Chunk the configs to avoid OOM errors
+        configs_cut_points = list(range(0,num_configs, 100)) + [num_configs]
+        chunk_order = []
+        for start, end in zip(configs_cut_points, configs_cut_points[1:]):
+            chunked_batch = chunk_batch(batch, start, end)
+            with torch.no_grad():
+                output = model.model(**chunked_batch)
+            chunk_order.extend(output['outputs'].cpu().numpy())
+        pred_order.append(np.argsort(np.concatenate(chunk_order))[:5])
+
+
+    idxs_string = [";".join(map(str,elem)) for elem in pred_order]
+    test_tile_df = test_tile_dataset.get_tile_df()
+    test_tile_df['TopConfigs'] = idxs_string
+    test_tile_df = test_tile_df[['ID', 'TopConfigs']]
+
+    print(test_tile_df.head())
+
+    submission_df = pd.read_csv('/home/cc/tpugraph/sample_submission.csv')
+    submission_df = submission_df.query(f"ID not in {test_tile_df.ID.tolist()}")
+    submission_df = pd.concat([test_tile_df, submission_df])
+    submission_df.to_csv('submission.csv', index=False)

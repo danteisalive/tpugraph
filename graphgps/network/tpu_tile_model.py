@@ -345,7 +345,6 @@ class LightningWrapper(pl.LightningModule):
         return super().on_validation_end()
 
     def test_step(self, batch, batch_idx):
-        assert(0)
         x, y = batch
         y_hat = self.model(x)
         loss = self.model.loss(y_hat, y)
