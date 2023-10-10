@@ -302,15 +302,18 @@ class TPUTileModel(nn.Module):
 
         # calculate loss:
         pred = pred.view(-1, num_configs)
-        true = true.view(-1, num_configs)
-        selected_configs = selected_configs.view(-1, num_configs)
-        # print(pred.shape, true.shape, selected_configs.shape)
-
-        outputs = {'outputs': pred, 'order': torch.argsort(true, dim=1)}
+        
         if config_runtime is not None:
+
+            selected_configs = selected_configs.view(-1, num_configs)
+            true = true.view(-1, num_configs)
+            outputs = {'outputs': pred, 'order': torch.argsort(true, dim=1)}
             loss = 0
             loss += self.loss_fn(pred, true, selected_configs)
             outputs['loss'] = loss
+
+        else:
+            outputs = {'outputs': pred}
 
         return outputs
         
