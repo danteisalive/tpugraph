@@ -101,8 +101,8 @@ if __name__ == '__main__':
     
     train_dataset = TPUTileDataset(data_dir="/home/cc/data/tpugraphs/npz", split_name='train')
     valid_dataset = TPUTileDataset(data_dir="/home/cc/data/tpugraphs/npz", split_name='valid')
-    train_dataloader = DataLoader(train_dataset, collate_fn=TileCollator(), batch_size=cfg.train.batch_size, shuffle=True)
-    valid_dataloader = DataLoader(valid_dataset, collate_fn=TileCollator(), batch_size=cfg.train.batch_size)
+    train_dataloader = DataLoader(train_dataset, collate_fn=TileCollator(), num_workers=2, batch_size=cfg.train.batch_size, shuffle=True)
+    valid_dataloader = DataLoader(valid_dataset, collate_fn=TileCollator(), num_workers=2, batch_size=cfg.train.batch_size)
     
     model = get_model(cfg=cfg)
 
@@ -112,11 +112,11 @@ if __name__ == '__main__':
     
     pl.seed_everything(42)
     trainer_config = dict(
-        max_epochs= 1,
+        max_epochs= 40,
         precision= 32,
         gradient_clip_val= 1.0,
-        accumulate_grad_batches= 1,
-        check_val_every_n_epoch= 1)
+        accumulate_grad_batches= 4,
+        check_val_every_n_epoch= 10)
 
     torch.set_float32_matmul_precision("medium")
     trainer = pl.Trainer(**trainer_config,)
