@@ -81,8 +81,8 @@ class TileTopK(tm.Metric):
             target: Tensor of shape (bs, seq_len) with the target runtimes
             config_attn_mask: Tensor of shape (bs, seq_len) with 1 in the positions of the elements
         """
-        best_runtimes = torch.where(config_attn_mask==1, target, torch.tensor(float('inf'))).min(1).values
-        masked_preds = torch.where(config_attn_mask==1, preds, torch.tensor(float('inf')))
+        best_runtimes = torch.where(config_attn_mask==1, target, torch.tensor(float('inf'), device=config_attn_mask.device)).min(1).values
+        masked_preds = torch.where(config_attn_mask==1, preds, torch.tensor(float('inf'), device=config_attn_mask.device))
         pred_bottomk_indices = torch.topk(masked_preds, k=self.k, largest=False).indices
         bs = preds.shape[0]
         bottom_k_positions = torch.stack([torch.arange(bs).repeat_interleave(self.k).to(config_attn_mask.device), pred_bottomk_indices.view(-1)])
