@@ -120,12 +120,5 @@ if __name__ == '__main__':
     trainer = pl.Trainer(**trainer_config,)
     trainer.fit(model, train_dataloader, valid_dataloader)
 
-    # for step, batch in enumerate(train_dataloader):
-
-    #     print(batch)
-
-    #     if step==0:
-    #         break
-
 
     
