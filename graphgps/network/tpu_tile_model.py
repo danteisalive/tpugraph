@@ -285,18 +285,18 @@ class TPUTileModel(nn.Module):
 
         batch = Batch.from_data_list(batch_train_list)
             
-        print("Before passing into PreMP:")
-        print(batch)
+        # print("Before passing into PreMP:")
+        # print(batch)
 
         if self.pre_mp is not None:
             batch = self.pre_mp(batch)
 
-        print("Before passing into GNN layers:")
-        print(batch)
+        # print("Before passing into GNN layers:")
+        # print(batch)
         batch = self.gnn_layers(batch)
 
-        print("Before passing into Prediction Head:")
-        print(batch)
+        # print("Before passing into Prediction Head:")
+        # print(batch)
         pred, true = self.post_mp(batch)        
 
 
@@ -304,16 +304,13 @@ class TPUTileModel(nn.Module):
         pred = pred.view(-1, num_configs)
         true = true.view(-1, num_configs)
         selected_configs = selected_configs.view(-1, num_configs)
-        print(pred.shape, true.shape, selected_configs.shape)
+        # print(pred.shape, true.shape, selected_configs.shape)
 
         outputs = {'outputs': pred, 'order': torch.argsort(true, dim=1)}
         if config_runtime is not None:
             loss = 0
             loss += self.loss_fn(pred, true, selected_configs)
             outputs['loss'] = loss
-
-        print(outputs['loss'])
-        assert(0)
 
         return outputs
         
@@ -326,26 +323,22 @@ class LightningWrapper(pl.LightningModule):
         self.topk = TileTopK()
         
     def forward(self, batch):
-        assert(0)
         return self.model(batch)
 
     def training_step(self, batch, batch_idx):
-        assert(0)
         outputs = self.model(**batch)
         return outputs['loss']
 
     def validation_step(self, batch, batch_idx):
-        
         outputs = self.model(**batch)
-        assert(0)
         loss = outputs['loss']
         self.log("val_loss", loss, prog_bar=True)
         config_attn_mask = torch.ones_like(batch['config_runtime'], device=batch['config_runtime'].device)
         self.topk.update(outputs['outputs'], batch['config_runtime'], config_attn_mask)
+
         return loss
     
     def on_validation_end(self) -> None:
-        assert(0)
         topk = self.topk.compute()
         self.print(f"topk {topk:.3f}")
         self.topk.reset()
