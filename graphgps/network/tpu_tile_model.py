@@ -98,7 +98,6 @@ class NodeEncoder(nn.Module):
     NODE_OP_CODES = 120
     NODE_FEATS = 140
     CONFIG_FEATS = 24
-    NODE_CONFIG_FEATS = 18
     
     def __init__(self, embedding_size : int, layer_norm_eps : float = 1e-12):
         super().__init__()
@@ -148,7 +147,6 @@ class TPUTileModel(nn.Module):
     NODE_OP_CODES = 120
     NODE_FEATS = 140
     CONFIG_FEATS = 24
-    NODE_CONFIG_FEATS = 18
 
     def __init__(self, cfg):
         super().__init__()

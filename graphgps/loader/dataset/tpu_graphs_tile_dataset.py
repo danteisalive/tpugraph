@@ -12,7 +12,6 @@ class TPUTileDataset(torch.utils.data.Dataset):
     NODE_OP_CODES = 120
     NODE_FEATS = 140
     CONFIG_FEATS = 24
-    NODE_CONFIG_FEATS = 18
 
 
     def _generate_tile_df(self) -> pd.DataFrame:
@@ -138,44 +137,3 @@ class TileCollator:
 if __name__ == '__main__':
     dataset = TPUTileDataset(root='datasets/TPUGraphs')
     import pdb; pdb.set_trace()
-
-
-
-
-# def preprocess_batch(batch: Batch):
-    
-#     batch_list = batch.to_data_list()
-#     processed_batch_list = []
-
-    
-#     """
-#     node_feat (80, 140)
-#     node_opcode (80,)
-#     edge_index (86, 2)
-#     config_feat (3246, 24)
-#     config_runtime (3246,)
-#     config_runtime_normalizers (3246,)
-#     """
-#     max_nodes_length = max([graph.nodes_opcode.shape[0] for graph in batch_list])
-    
-#     # print("max_nodes_length: ", max_nodes_length)
-#     # print("Before Padding")
-#     # for graph in batch_list:
-#     #     print(graph.nodes_feats.shape, graph.nodes_opcode.shape, graph.configurable_nodes_feat.shape, graph.y.shape,)
-    
-#     for graph in batch_list:
-        
-#         graph.nodes_opcode = F.pad(graph.nodes_opcode, (0, max_nodes_length - graph.nodes_opcode.shape[0]), value=121).long()
-#         graph.nodes_feats =  F.pad(graph.nodes_feats, (0,0,0, max_nodes_length - graph.nodes_feats.shape[0]), value=0)
-#         graph.configurable_nodes_feat = graph.configurable_nodes_feat.view(graph.num_configs, graph.num_configurable_nodes, -1) # (num_configs, 1, CONFIG_FEAT)        
-#         graph.adj = SparseTensor(row=graph.edge_index[0], col=graph.edge_index[1], sparse_sizes=(max_nodes_length, max_nodes_length))
-        
-#         graph.validate(raise_on_error=True)
-#         processed_batch_list.append(graph)
-    
-#     # print("After Padding")
-#     # for graph in batch_list:
-#     #     print(graph.nodes_feats.shape, graph.nodes_opcode.shape, graph.configurable_nodes_feat.shape, graph.y.shape,)
-        
-    
-#     return Batch.from_data_list(processed_batch_list)
