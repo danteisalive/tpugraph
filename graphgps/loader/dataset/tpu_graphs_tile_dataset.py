@@ -71,12 +71,12 @@ class TPUTileDataset(torch.utils.data.Dataset):
 
         
         """
-        node_feat (80, 140)
-        node_opcode (80,)
-        edge_index (86, 2)
-        config_feat (3246, 24)
-        config_runtime (3246,)
-        config_runtime_normalizers (3246,)
+        node_feat                     | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (80, 140)
+        node_opcode                   | Type: <class 'numpy.ndarray'> | Dtype: uint8    | Shape (80,)
+        edge_index                    | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (86, 2)                  
+        config_feat                   | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (3246, 24) 
+        config_runtime                | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (3246,)
+        config_runtime_normalizers    | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (3246,)
         """
         
         tile_dict = self._tile_loader(self.df.paths[idx])
