@@ -18,7 +18,7 @@ class TPULayoutDataset(torch.utils.data.Dataset):
     PADDING_VALUE = NODE_OP_CODES + 1
 
 
-    def generate_layout_df(self) -> pd.DataFrame:
+    def _generate_layout_df(self) -> pd.DataFrame:
         layout_df = pd.DataFrame({'paths': [elem for elem in (Path(self.data_dir) / 'layout').rglob("*") if elem.is_file()]}).assign(
             split=lambda df: df.paths.apply(lambda x: x.parent.name),
             configuration=lambda df: df.paths.apply(lambda x: x.parent.parent.name),
@@ -40,20 +40,17 @@ class TPULayoutDataset(torch.utils.data.Dataset):
                  num_configs : int = 32, 
                  max_configs : Optional[int] = None,
                  variance : float = 1e6,
-                 segment_size : int = 1000,
                 ):
         
         self.data_dir = data_dir
 
-        df = self._generate_tile_df()
+        df = self._generate_layout_df()
         query = f"split == '{split_name}'"  #TODO: train adn validation dataset should be loaded at the same time and then we do a cross validation!
         self.df = df.query(query).reset_index(drop=True)
         
         self.num_configs = num_configs
         self.max_configs = max_configs
         self.split_name = split_name
-
-        self.segment_size = segment_size
 
         self.variance = variance # TODO: Placeholder for runtime normalizer
     
@@ -117,6 +114,16 @@ class TPULayoutDataset(torch.utils.data.Dataset):
 class LayoutCollator:
     targets:bool = True
 
+    NODE_OP_CODES = 120
+    NODE_FEATS = 140
+    CONFIG_FEATS = 18
+
+    PADDING_VALUE = NODE_OP_CODES + 1
+
+    def __init__(self, 
+                 segment_size : int = 1000,
+                 ):
+        self.segment_size = segment_size
     """
     This function takes the layout `node_config_feat` tensor which has the shape of 
     (num_configs, number_of_configurable_nodes, CONFIG_FEAT) and converts it into 
@@ -191,7 +198,7 @@ class LayoutCollator:
             assert num_nodes % self.segment_size == 0, ""
             node_config_ids = graph['node_config_ids'].long()
             node_config_feat = graph['node_config_feat']
-            node_config_feat = self._ransform_node_config_features(node_config_feat, node_config_ids)  # (num_configs, num_nodes, CONFIG_FEAT)
+            node_config_feat = self._ransform_node_config_features(node_config_feat, node_config_ids, num_nodes)  # (num_configs, num_nodes, CONFIG_FEAT)
             num_config_features = node_config_feat.shape[2]
             node_config_feat = graph['node_config_feat'].view(-1, num_config_features) # (num_configs * num_nodes, CONFIG_FEAT)
             

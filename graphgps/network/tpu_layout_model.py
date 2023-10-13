@@ -239,76 +239,74 @@ class TPULayoutModel(nn.Module):
     def forward(self, batch : Batch):
         
 
-        # First encode nodes+ config features
+        # First encode nodes + config features
         # node_encoder_output.shape = (bs, num_configs, num_nodes, embedding_size)
-        node_encoder_output = self.node_encoder(node_opcode,
-                                  node_feat,
-                                  node_config_feat,
-                                  ) 
+        node_encoder_output = self.node_encoder(batch)
 
-        batch_size = node_encoder_output.shape[0]
-        num_configs = node_encoder_output.shape[1]
-        num_nodes = node_encoder_output.shape[2]
+        assert(0)
+        # batch_size = node_encoder_output.shape[0]
+        # num_configs = node_encoder_output.shape[1]
+        # num_nodes = node_encoder_output.shape[2]
 
-        batch_train_list = []
-        for batch_idx in range(batch_size):
+        # batch_train_list = []
+        # for batch_idx in range(batch_size):
 
-            edges = edge_index[batch_idx]
-            # Create a mask for elements equal to [-1, -1] in edge_index
-            edges_mask = (edges[:, 0] != -1) | (edges[:, 1] != -1)
-            # Apply the mask to filter out elements
-            config_edge_index = edges[edges_mask].T 
+        #     edges = edge_index[batch_idx]
+        #     # Create a mask for elements equal to [-1, -1] in edge_index
+        #     edges_mask = (edges[:, 0] != -1) | (edges[:, 1] != -1)
+        #     # Apply the mask to filter out elements
+        #     config_edge_index = edges[edges_mask].T 
 
-            for config_idx in range(num_configs):
+        #     for config_idx in range(num_configs):
 
-                config_x = node_encoder_output[batch_idx][config_idx]
+        #         config_x = node_encoder_output[batch_idx][config_idx]
                 
-                if config_runtime is None:
-                    config_graph = Data(edge_index=config_edge_index, x=config_x)
-                else:
-                    config_y = config_runtime[batch_idx][config_idx]             
-                    config_graph = Data(edge_index=config_edge_index, x=config_x, y=config_y)
+        #         if config_runtime is None:
+        #             config_graph = Data(edge_index=config_edge_index, x=config_x)
+        #         else:
+        #             config_y = config_runtime[batch_idx][config_idx]             
+        #             config_graph = Data(edge_index=config_edge_index, x=config_x, y=config_y)
                 
-                batch_train_list.append(config_graph)
+        #         batch_train_list.append(config_graph)
 
-        batch = Batch.from_data_list(batch_train_list)
+        # batch = Batch.from_data_list(batch_train_list)
 
-        """
-        node_opce = [2, 3, 2,4,5,6]
-        batch.batch = = [0, 0, 1,1,1,1, ]
-        """
+        # """
+        # node_opce = [2, 3, 2,4,5,6]
+        # batch.batch = = [0, 0, 1,1,1,1, ]
+        # """
             
-        # print("Before passing into PreMP:")
-        # print(batch)
+        # # print("Before passing into PreMP:")
+        # # print(batch)
 
-        if self.pre_mp is not None:
-            batch = self.pre_mp(batch)
+        # if self.pre_mp is not None:
+        #     batch = self.pre_mp(batch)
 
-        # print("Before passing into GNN layers:")
-        # print(batch)
-        batch = self.gnn_layers(batch)
+        # # print("Before passing into GNN layers:")
+        # # print(batch)
+        # batch = self.gnn_layers(batch)
 
-        # print("Before passing into Prediction Head:")
-        # print(batch)
-        pred, true = self.post_mp(batch)        
+        # # print("Before passing into Prediction Head:")
+        # # print(batch)
+        # pred, true = self.post_mp(batch)        
 
 
-        # calculate loss:
-        pred = pred.view(-1, num_configs)
+        # # calculate loss:
+        # pred = pred.view(-1, num_configs)
         
-        if config_runtime is not None:
+        # if config_runtime is not None:
 
-            selected_configs = selected_configs.view(-1, num_configs)
-            true = true.view(-1, num_configs)
-            outputs = {'outputs': pred, 'order': torch.argsort(true, dim=1)}
-            loss = 0
-            loss += self.loss_fn(pred, true, selected_configs)
-            outputs['loss'] = loss
+        #     selected_configs = selected_configs.view(-1, num_configs)
+        #     true = true.view(-1, num_configs)
+        #     outputs = {'outputs': pred, 'order': torch.argsort(true, dim=1)}
+        #     loss = 0
+        #     loss += self.loss_fn(pred, true, selected_configs)
+        #     outputs['loss'] = loss
 
-        else:
-            outputs = {'outputs': pred}
+        # else:
+        #     outputs = {'outputs': pred}
 
-        return outputs
+        # return outputs
         
 
 
