@@ -169,7 +169,8 @@ class LayoutCollator:
         zeros.scatter_reduce_(1, idxs, node_config_feat, reduce='sum')
 
         return zeros # (num_configs, num_nodes, CONFIG_FEAT)
-    
+
+
     def __call__(self, batch : List):
 
         """
@@ -188,35 +189,40 @@ class LayoutCollator:
 
             original_num_nodes = graph['node_opcode'].shape[0]
             amount_of_padding = 0 if original_num_nodes % self.segment_size == 0 else self.segment_size - original_num_nodes % self.segment_size
-            node_opcodes = F.pad(graph['node_opcode'], (0, amount_of_padding), value=self.PADDING_VALUE).long()
+            node_opcode = F.pad(graph['node_opcode'], (0, amount_of_padding), value=self.PADDING_VALUE).long()
 
             node_feat    = F.pad(graph['node_feat'], (0,0, 0, amount_of_padding), value=self.PADDING_VALUE)
             
+            # edges = graph['edge_index']
+            # filtered_edges = edges[(edges[:, 0] >= 50) & (edges[:, 0] <= 100) & (edges[:, 1] >= 50) & (edges[:, 1] <= 100)]
+
             edge_index   = graph['edge_index'].T
             
-            num_nodes = node_opcodes.shape[0]
+            num_nodes = node_opcode.shape[0]
             assert num_nodes % self.segment_size == 0, ""
             node_config_ids = graph['node_config_ids'].long()
             node_config_feat = graph['node_config_feat']
             node_config_feat = self._ransform_node_config_features(node_config_feat, node_config_ids, num_nodes)  # (num_configs, num_nodes, CONFIG_FEAT)
             num_config_features = node_config_feat.shape[2]
-            node_config_feat = graph['node_config_feat'].view(-1, num_config_features) # (num_configs * num_nodes, CONFIG_FEAT)
-            
+            node_config_feat = node_config_feat.view(-1, num_config_features) # (num_configs * num_nodes, CONFIG_FEAT)
+
+
             # there will be padding if number of sample config runtimes are different
             if self.targets:
                 config_runtime = graph['config_runtime']
 
-                data = Data(edge_index=edge_index, 
-                            node_feat=node_feat, 
-                            node_opcodes=node_opcodes, 
-                            node_config_feat=node_config_feat, 
+                data = Data(edge_index=edge_index,              # (2, UNK)
+                            node_opcode=node_opcode,          # (num_nodes, )
+                            node_feat=node_feat,                # (num_nodes, NODE_OP_CODES)
+                            node_config_feat=node_config_feat,  # (num_configs * num_nodes, CONFIG_FEAT, )
                             y=config_runtime, 
-                            num_nodes=num_nodes,
                         )
+                # print(f"{edge_index.shape=},{node_feat.shape=},{node_opcodes.shape=},{node_config_feat.shape=},{config_runtime.shape=}")
+
             else:
 
                 data = Data(edge_index=edge_index,              # (2, UNK)
-                            node_opcodes=node_opcodes,          # (num_nodes, )
+                            node_opcode=node_opcode,          # (num_nodes, )
                             node_feat=node_feat,                # (num_nodes, NODE_OP_CODES)
                             node_config_feat=node_config_feat,  # (num_configs * num_nodes, CONFIG_FEAT, )
                         )
@@ -226,17 +232,6 @@ class LayoutCollator:
 
 
         return Batch.from_data_list(batch_list)
-
-        for graph in batch_list:
-            
-            graph.nodes_opcode = F.pad(graph.nodes_opcode, (0, max_nodes_length - graph.nodes_opcode.shape[0]), value=121).long()
-            graph.nodes_feats =  F.pad(graph.nodes_feats, (0,0,0, max_nodes_length - graph.nodes_feats.shape[0]), value=0)
-            graph.configurable_nodes_feat = graph.configurable_nodes_feat.view(graph.num_configs, graph.num_configurable_nodes, -1) # (num_configs, 1, CONFIG_FEAT)        
-            graph.adj = SparseTensor(row=graph.edge_index[0], col=graph.edge_index[1], sparse_sizes=(max_nodes_length, max_nodes_length))
-            
-            graph.validate(raise_on_error=True)
-            processed_batch_list.append(graph)
-
 
 
 

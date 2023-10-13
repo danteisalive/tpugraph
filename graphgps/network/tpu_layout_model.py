@@ -98,7 +98,22 @@ class NodeEncoder(nn.Module):
     NODE_OP_CODES = 120
     NODE_FEATS = 140
     CONFIG_FEATS = 18
+
+    def _reshape_node_config_features(self,
+                                      node_opcodes : torch.Tensor,     # (num_nodes, )
+                                      node_config_feat : torch.Tensor  # (num_configs * num_nodes, CONFIG_FEAT, )
+                                      ):
+            
+            num_nodes = node_opcodes.shape[0]
+            assert node_config_feat.shape[0] % num_nodes == 0, ""
+
+            num_configs = node_config_feat.shape[0] // num_nodes
+            node_config_feat_reshaped = node_config_feat.view(num_configs, num_nodes, -1)
+
+            return node_config_feat_reshaped   # (num_configs, num_nodes, CONFIG_FEAT, )
     
+
+
     def __init__(self, embedding_size : int, layer_norm_eps : float = 1e-12):
         super().__init__()
         
@@ -121,23 +136,32 @@ class NodeEncoder(nn.Module):
             node_feat : torch.Tensor,   # (num_nodes, NODE_FEATS(140))
             node_config_feat : torch.Tensor, # (num_configs, num_nodes, CONFIG_FEATS(18))
         """
-        opcode_embeddings = self.node_opcode_embeddings(node_opcode)  # (bs, num_nodes, embedding_size)
+        print(batch.node_opcode.shape)
+        opcode_embeddings = self.node_opcode_embeddings(batch.node_opcode)  # (num_nodes, embedding_size)
+        print(opcode_embeddings.shape)
+
         
-        nodes_feats_embeddings =  self.linear(node_feat) # (bs, num_nodes, embedding_size)
-        nodes_feats_embeddings = opcode_embeddings + nodes_feats_embeddings # (bs, num_nodes, embedding_size)
-        nodes_feats_embeddings = self.nodes_layer_norm(nodes_feats_embeddings) # (bs, num_nodes, embedding_size)
-        
-        config_feats_embeddings = self.config_feat_embeddings(node_config_feat)  # (bs, num_configs, 1, embedding_size)
-        config_feats_embeddings = self.config_layer_norm(config_feats_embeddings) # (bs * num_configs, 1, embedding_size)
-        
-        num_nodes = nodes_feats_embeddings.shape[1]
-        bs, num_configs, _, dim = config_feats_embeddings.shape  # (bs, num_configs, 1, embedding_size)
-        config_feats_embeddings = config_feats_embeddings.expand(bs, num_configs, num_nodes, dim) # (bs, num_configs, num_nodes, embedding_size)
-        
-        nodes_feats_embeddings = nodes_feats_embeddings.unsqueeze(1).repeat(1, num_configs, 1, 1) # (bs, num_configs, num_nodes, embedding_size)
-        nodes_feats_embeddings += config_feats_embeddings # (bs, num_configs, num_nodes, embedding_size)
-        
-        return nodes_feats_embeddings
+        nodes_feats_embeddings =  self.linear(batch.node_feat) # (num_nodes, embedding_size)
+        print(nodes_feats_embeddings.shape)
+
+        nodes_feats_embeddings = opcode_embeddings + nodes_feats_embeddings # (num_nodes, embedding_size)
+        nodes_feats_embeddings = self.nodes_layer_norm(nodes_feats_embeddings) # (num_nodes, embedding_size)
+        print(nodes_feats_embeddings.shape)
+
+        node_config_feat = self._reshape_node_config_features(batch.node_opcode, batch.node_config_feat) # ( num_configs, num_nodes, CONFIG_FEATS)
+        print(node_config_feat.shape)
+        config_feats_embeddings = self.config_feat_embeddings(node_config_feat)  # ( num_configs, num_nodes, embedding_size)
+        config_feats_embeddings = self.config_layer_norm(config_feats_embeddings) # ( num_configs, num_nodes, embedding_size)
+        print(config_feats_embeddings.shape)
+
+        num_configs = config_feats_embeddings.shape[0] 
+        nodes_feats_embeddings = nodes_feats_embeddings.unsqueeze(0).repeat(num_configs, 1, 1) # (num_configs, num_nodes, embedding_size)
+        nodes_feats_embeddings += config_feats_embeddings # (num_configs, num_nodes, embedding_size)
+        print(nodes_feats_embeddings.shape)
+        print(batch.batch.shape)
+        batch.node_feat = nodes_feats_embeddings
+
+        return batch
     
 
 
@@ -241,9 +265,9 @@ class TPULayoutModel(nn.Module):
 
         # First encode nodes + config features
         # node_encoder_output.shape = (bs, num_configs, num_nodes, embedding_size)
-        node_encoder_output = self.node_encoder(batch)
-
+        node_encoder_output_batch = self.node_encoder(batch)
         assert(0)
+        
         # batch_size = node_encoder_output.shape[0]
         # num_configs = node_encoder_output.shape[1]
         # num_nodes = node_encoder_output.shape[2]

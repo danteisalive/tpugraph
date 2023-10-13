@@ -21,24 +21,23 @@ from torch_geometric.graphgym.utils.comp_budget import params_count
 from torch_geometric.graphgym.utils.device import auto_select_device
 from torch_geometric.graphgym.register import train_dict
 from torch_geometric import seed_everything
+
+
+
+
+
+from graphgps.loader.dataset.tpu_graphs_layout_dataset import (TPULayoutDataset, LayoutCollator)
+from torch.utils.data import  DataLoader
+from torch_geometric.data import Batch
+from torch.nn import functional as F
+from graphgps.logger import create_logger
 import torch.nn as nn
 import pytorch_lightning as pl
 from tqdm import tqdm
 import numpy as np
 import pandas as pd
 
-from graphgps.finetuning import load_pretrained_model_cfg, \
-    init_model_from_pretrained
-from graphgps.logger import create_logger
-
-from graphgps.loader.dataset.tpu_graphs_layout_dataset import (TPULayoutDataset, LayoutCollator)
-from torch.utils.data import  DataLoader
-from torch_geometric.data import Batch
-from torch.nn import functional as F
-
-
-
-from graphgps.network.tpu_tile_model import get_model
+from graphgps.network.tpu_layout_model import get_model
 
 def new_optimizer_config(cfg):
     return OptimizerConfig(optimizer=cfg.optim.optimizer,
@@ -100,30 +99,35 @@ if __name__ == '__main__':
     
     
     train_dataset = TPULayoutDataset(data_dir="/home/cc/data/tpugraphs/npz", split_name='train')
-    # valid_dataset = TPULayoutDataset(data_dir="/home/cc/data/tpugraphs/npz", split_name='valid')
+    valid_dataset = TPULayoutDataset(data_dir="/home/cc/data/tpugraphs/npz", split_name='valid')
     train_dataloader = DataLoader(train_dataset, collate_fn=LayoutCollator(), num_workers=2, batch_size=cfg.train.batch_size, shuffle=True)
-    # valid_dataloader = DataLoader(valid_dataset, collate_fn=LayoutCollator(), num_workers=2, batch_size=cfg.train.batch_size)
+    valid_dataloader = DataLoader(valid_dataset, collate_fn=LayoutCollator(), num_workers=2, batch_size=cfg.train.batch_size)
+
+    # for batch in DataLoader(train_dataset, collate_fn=LayoutCollator(), batch_size=cfg.train.batch_size):
+    #     print(batch)
+    #     batch_list = batch.to_data_list()
+    #     for graph in batch_list:
+    #         print(graph)
+        
+    #     assert(0)
+
+    model = get_model(cfg=cfg)
+
+    # print(model)
+    logging.info(model)
+    logging.info(cfg)
     
-    for batch in train_dataloader:
-        print(batch)
+    pl.seed_everything(42)
+    trainer_config = dict(
+        max_epochs= 40,
+        precision= 32,
+        gradient_clip_val= 1.0,
+        accumulate_grad_batches= 4,
+        check_val_every_n_epoch= 10)
 
-    # model = get_model(cfg=cfg)
-
-    # # print(model)
-    # logging.info(model)
-    # logging.info(cfg)
-    
-    # pl.seed_everything(42)
-    # trainer_config = dict(
-    #     max_epochs= 40,
-    #     precision= 32,
-    #     gradient_clip_val= 1.0,
-    #     accumulate_grad_batches= 4,
-    #     check_val_every_n_epoch= 10)
-
-    # torch.set_float32_matmul_precision("medium")
-    # trainer = pl.Trainer(**trainer_config,)
-    # trainer.fit(model, train_dataloader, valid_dataloader)
+    torch.set_float32_matmul_precision("medium")
+    trainer = pl.Trainer(**trainer_config,)
+    trainer.fit(model, train_dataloader, valid_dataloader)
 
 
     
