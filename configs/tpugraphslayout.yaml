@@ -1,18 +1,18 @@
 out_dir: tests/results
 dataset:
-  name: TPUGraphsDataset
-  format: PyG-TPUGraphsDataset
+  name: TPULayoutDataset
+  format: PyG-TPUlayoutDataset
   task: graph
   task_type: ranking
   transductive: False
 train:
   mode: custom_tpu
-  batch_size: 32
+  batch_size: 8
   eval_period: 1
   ckpt_period: 100
   sampler: full_batch
 model:
-  type: custom_tpu_gnn
+  type: tpu_layout_model
   loss_fun: cross_entropy
   edge_decoding: dot
   graph_pooling: add
@@ -33,6 +33,7 @@ optim:
   base_lr: 0.0001
   max_epoch: 100
 share:
-  dim_in: 286
+  dim_in: 128
+  num_sample_config: 32
 device: cuda
 accelerator : cuda

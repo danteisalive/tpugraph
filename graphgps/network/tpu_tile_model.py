@@ -106,7 +106,7 @@ class NodeEncoder(nn.Module):
         self.layer_norm_eps = layer_norm_eps
 
         # layers for node op code and features
-        self.node_opcode_embeddings = nn.Embedding(self.NODE_OP_CODES+2 , self.embedding_size, padding_idx=self.NODE_OP_CODES+1)
+        self.node_opcode_embeddings = nn.Embedding(self.NODE_OP_CODES+2 , self.embedding_size, padding_idx=self.NODE_OP_CODES+1) # We have 122 opcodes (121 from dataset + 1 dummy opcode for padding)
         self.linear = nn.Linear(self.NODE_FEATS, self.embedding_size, bias=False)
         self.nodes_layer_norm = nn.LayerNorm(embedding_size, eps=self.layer_norm_eps)
         

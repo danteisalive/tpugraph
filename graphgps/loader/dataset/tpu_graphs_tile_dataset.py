@@ -59,7 +59,7 @@ class TPUTileDataset(torch.utils.data.Dataset):
         if self.num_configs == -1:
             return np.arange(total_configs)
         if total_configs < self.num_configs:
-            return np.random.choice(total_configs, self.num_configs, replace=True)
+            return np.random.choice(total_configs, self.num_configs, replace=True) #TODO: if we have less than self.num_configs config samples, then some of them will be repaeted. Fix this with padding!
         return  np.random.choice(total_configs, self.num_configs, replace=False)
     
     def _tile_loader(self, path):
@@ -80,6 +80,7 @@ class TPUTileDataset(torch.utils.data.Dataset):
         """
         
         tile_dict = self._tile_loader(self.df.paths[idx])
+        
         if selected_configs is None:
             selected_configs = self.select_configs(tile_dict['config_feat'].shape[0])
             
@@ -110,6 +111,16 @@ class TileCollator:
     targets:bool = True
     
     def __call__(self, batch : List):
+
+        """
+        node_feat                     | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (80, 140)   
+        node_opcode                   | Type: <class 'numpy.ndarray'> | Dtype: uint8    | Shape (80,)      
+        edge_index                    | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (86, 2)                  
+        config_feat                   | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (num_configs, 24)   
+        config_runtime                | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (num_configs,)
+        config_runtime_normalizers    | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (num_configs,)
+        """
+
         output = {}
 
         max_node_len = max([elem['node_opcode'].shape[0] for elem in batch])
