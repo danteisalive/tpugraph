@@ -212,8 +212,9 @@ class LayoutCollator:
                 config_runtime = graph['config_runtime']
 
                 data = Data(edge_index=edge_index,              # (2, UNK)
-                            node_opcode=node_opcode,          # (num_nodes, )
-                            node_feat=node_feat,                # (num_nodes, NODE_OP_CODES)
+                            x=node_feat,                        # (num_nodes, NODE_OP_CODES)
+                            node_opcode=node_opcode,            # (num_nodes, )
+                            # node_feat=node_feat,                # (num_nodes, NODE_OP_CODES)
                             node_config_feat=node_config_feat,  # (num_configs * num_nodes, CONFIG_FEAT, )
                             y=config_runtime, 
                         )
@@ -222,8 +223,9 @@ class LayoutCollator:
             else:
 
                 data = Data(edge_index=edge_index,              # (2, UNK)
-                            node_opcode=node_opcode,          # (num_nodes, )
-                            node_feat=node_feat,                # (num_nodes, NODE_OP_CODES)
+                            x=node_feat,                        # (num_nodes, NODE_OP_CODES)
+                            node_opcode=node_opcode,            # (num_nodes, )
+                            # node_feat=node_feat,              # (num_nodes, NODE_OP_CODES)
                             node_config_feat=node_config_feat,  # (num_configs * num_nodes, CONFIG_FEAT, )
                         )
             

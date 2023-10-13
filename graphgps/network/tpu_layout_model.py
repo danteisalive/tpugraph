@@ -140,8 +140,8 @@ class NodeEncoder(nn.Module):
         opcode_embeddings = self.node_opcode_embeddings(batch.node_opcode)  # (num_nodes, embedding_size)
         print(opcode_embeddings.shape)
 
-        
-        nodes_feats_embeddings =  self.linear(batch.node_feat) # (num_nodes, embedding_size)
+        print(batch.x.shape)
+        nodes_feats_embeddings =  self.linear(batch.x) # (num_nodes, embedding_size)
         print(nodes_feats_embeddings.shape)
 
         nodes_feats_embeddings = opcode_embeddings + nodes_feats_embeddings # (num_nodes, embedding_size)
@@ -159,8 +159,10 @@ class NodeEncoder(nn.Module):
         nodes_feats_embeddings += config_feats_embeddings # (num_configs, num_nodes, embedding_size)
         print(nodes_feats_embeddings.shape)
         print(batch.batch.shape)
-        batch.node_feat = nodes_feats_embeddings
+        batch.x = nodes_feats_embeddings
 
+        print(batch.x.shape)
+        
         return batch
     
 
@@ -295,10 +297,6 @@ class TPULayoutModel(nn.Module):
 
         # batch = Batch.from_data_list(batch_train_list)
 
-        # """
-        # node_opce = [2, 3, 2,4,5,6]
-        # batch.batch = = [0, 0, 1,1,1,1, ]
-        # """
             
         # # print("Before passing into PreMP:")
         # # print(batch)
