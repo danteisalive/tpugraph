@@ -218,7 +218,7 @@ class LayoutCollator:
                             node_config_feat=node_config_feat,  # (num_configs * num_nodes, CONFIG_FEAT, )
                             y=config_runtime, 
                         )
-                # print(f"{edge_index.shape=},{node_feat.shape=},{node_opcodes.shape=},{node_config_feat.shape=},{config_runtime.shape=}")
+                print(f"{edge_index.shape=},{node_feat.shape=},{node_opcode.shape=},{node_config_feat.shape=},{config_runtime.shape=}")
 
             else:
 

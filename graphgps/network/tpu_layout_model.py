@@ -272,32 +272,27 @@ class TPULayoutModel(nn.Module):
         # node_encoder_output.shape = (num_nodes, num_configs, embedding_size)
         batch = self.node_encoder(batch)
         
-        # batch_size = node_encoder_output.shape[0]
-        # num_configs = node_encoder_output.shape[1]
-        # num_nodes = node_encoder_output.shape[2]
 
-        # batch_train_list = []
-        # for batch_idx in range(batch_size):
+        batch_train_list = []
+        for graph in batch.to_data_list():
 
-        #     edges = edge_index[batch_idx]
-        #     # Create a mask for elements equal to [-1, -1] in edge_index
-        #     edges_mask = (edges[:, 0] != -1) | (edges[:, 1] != -1)
-        #     # Apply the mask to filter out elements
-        #     config_edge_index = edges[edges_mask].T 
+            config_edge_index = graph.edge_index
+            num_configs = graph.x.shape[1]  # x.shape = (num_nodes, num_configs, embedding_size)
 
-        #     for config_idx in range(num_configs):
+            for config_idx in range(num_configs):
 
-        #         config_x = node_encoder_output[batch_idx][config_idx]
+                config_x = graph.x[:, config_idx, :] # config_x.shape = (num_nodes, embedding_size)
+                             
                 
-        #         if config_runtime is None:
-        #             config_graph = Data(edge_index=config_edge_index, x=config_x)
-        #         else:
-        #             config_y = config_runtime[batch_idx][config_idx]             
-        #             config_graph = Data(edge_index=config_edge_index, x=config_x, y=config_y)
+                if graph.y is None:
+                    config_graph = Data(edge_index=config_edge_index, x=config_x)
+                else:
+                    config_y = graph.y[config_idx]             
+                    config_graph = Data(edge_index=config_edge_index, x=config_x, y=config_y)
                 
-        #         batch_train_list.append(config_graph)
+                batch_train_list.append(config_graph)
 
-        # batch = Batch.from_data_list(batch_train_list)
+        batch = Batch.from_data_list(batch_train_list)
 
             
         print("Before passing into PreMP:")
