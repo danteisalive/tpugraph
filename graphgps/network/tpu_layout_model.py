@@ -108,9 +108,9 @@ class NodeEncoder(nn.Module):
             assert node_config_feat.shape[0] % num_nodes == 0, ""
 
             num_configs = node_config_feat.shape[0] // num_nodes
-            node_config_feat_reshaped = node_config_feat.view(num_configs, num_nodes, -1)
-
-            return node_config_feat_reshaped   # (num_configs, num_nodes, CONFIG_FEAT, )
+            node_config_feat_reshaped = node_config_feat.view(num_configs, num_nodes, -1) # (num_configs, num_nodes, CONFIG_FEAT, )
+            node_config_feat_reshaped = node_config_feat_reshaped.transpose(0,1) # (num_nodes, num_configs, CONFIG_FEAT, )
+            return node_config_feat_reshaped  
     
 
 
@@ -148,15 +148,18 @@ class NodeEncoder(nn.Module):
         nodes_feats_embeddings = self.nodes_layer_norm(nodes_feats_embeddings) # (num_nodes, embedding_size)
         print(nodes_feats_embeddings.shape)
 
-        node_config_feat = self._reshape_node_config_features(batch.node_opcode, batch.node_config_feat) # ( num_configs, num_nodes, CONFIG_FEATS)
-        print(node_config_feat.shape)
-        config_feats_embeddings = self.config_feat_embeddings(node_config_feat)  # ( num_configs, num_nodes, embedding_size)
-        config_feats_embeddings = self.config_layer_norm(config_feats_embeddings) # ( num_configs, num_nodes, embedding_size)
-        print(config_feats_embeddings.shape)
+        node_config_feat = self._reshape_node_config_features(batch.node_opcode, batch.node_config_feat) # (num_nodes, num_configs, CONFIG_FEATS)
+        print(f"{node_config_feat.shape=}")
+        config_feats_embeddings = self.config_feat_embeddings(node_config_feat)  # (num_nodes, num_configs, embedding_size)
+        config_feats_embeddings = self.config_layer_norm(config_feats_embeddings) # (num_nodes, num_configs, embedding_size)
+        print(f"{config_feats_embeddings.shape=}")
 
-        num_configs = config_feats_embeddings.shape[0] 
-        nodes_feats_embeddings = nodes_feats_embeddings.unsqueeze(0).repeat(num_configs, 1, 1) # (num_configs, num_nodes, embedding_size)
-        nodes_feats_embeddings += config_feats_embeddings # (num_configs, num_nodes, embedding_size)
+        num_configs = config_feats_embeddings.shape[1] 
+        nodes_feats_embeddings = nodes_feats_embeddings.unsqueeze(1) # (num_nodes, 1, embedding_size)
+        nodes_feats_embeddings = nodes_feats_embeddings.repeat(1, num_configs, 1) # (num_nodes, num_configs, embedding_size)
+        print(f"{nodes_feats_embeddings.shape=}")
+
+        nodes_feats_embeddings += config_feats_embeddings # (num_nodes, num_configs, embedding_size)
         print(nodes_feats_embeddings.shape)
         print(batch.batch.shape)
         batch.x = nodes_feats_embeddings
@@ -266,9 +269,8 @@ class TPULayoutModel(nn.Module):
         
 
         # First encode nodes + config features
-        # node_encoder_output.shape = (bs, num_configs, num_nodes, embedding_size)
-        node_encoder_output_batch = self.node_encoder(batch)
-        assert(0)
+        # node_encoder_output.shape = (num_nodes, num_configs, embedding_size)
+        batch = self.node_encoder(batch)
         
         # batch_size = node_encoder_output.shape[0]
         # num_configs = node_encoder_output.shape[1]
@@ -298,11 +300,17 @@ class TPULayoutModel(nn.Module):
         # batch = Batch.from_data_list(batch_train_list)
 
             
-        # # print("Before passing into PreMP:")
-        # # print(batch)
+        print("Before passing into PreMP:")
+        print(batch)
+        for graph in batch.to_data_list():
+            print(graph)
+        
+        assert(0)
 
-        # if self.pre_mp is not None:
-        #     batch = self.pre_mp(batch)
+        if self.pre_mp is not None:
+            batch = self.pre_mp(batch)
+
+        assert(0)
 
         # # print("Before passing into GNN layers:")
         # # print(batch)
