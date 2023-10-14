@@ -114,8 +114,8 @@ if __name__ == '__main__':
         max_epochs= 40,
         precision= 32,
         gradient_clip_val= 1.0,
-        accumulate_grad_batches= 4,
-        check_val_every_n_epoch= 10)
+        accumulate_grad_batches= 1,
+        check_val_every_n_epoch= 1)
 
     torch.set_float32_matmul_precision("medium")
     trainer = pl.Trainer(**trainer_config,)
