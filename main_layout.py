@@ -103,14 +103,6 @@ if __name__ == '__main__':
     train_dataloader = DataLoader(train_dataset, collate_fn=LayoutCollator(), num_workers=2, batch_size=cfg.train.batch_size, shuffle=True)
     valid_dataloader = DataLoader(valid_dataset, collate_fn=LayoutCollator(), num_workers=2, batch_size=cfg.train.batch_size)
 
-    # for batch in DataLoader(train_dataset, collate_fn=LayoutCollator(), batch_size=cfg.train.batch_size):
-    #     print(batch)
-    #     batch_list = batch.to_data_list()
-    #     for graph in batch_list:
-    #         print(graph)
-        
-    #     assert(0)
-
     model = get_model(cfg=cfg)
 
     # print(model)
