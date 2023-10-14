@@ -92,18 +92,9 @@ class KendallTau(tm.Metric):
         kendall_tau = KendallRankCorrCoef(num_outputs=bs)(_preds, _target)
         self.runtimes.append(kendall_tau)
 
-        # best_runtimes = torch.where(config_attn_mask==1, target, torch.tensor(float('inf'), device=config_attn_mask.device)).min(1).values
-        # masked_preds = torch.where(config_attn_mask==1, preds, torch.tensor(float('inf'), device=config_attn_mask.device))
-        # pred_bottomk_indices = torch.topk(masked_preds, k=self.k, largest=False).indices
-        # bs = preds.shape[0]
-        # bottom_k_positions = torch.stack([torch.arange(bs).repeat_interleave(self.k).to(config_attn_mask.device), pred_bottomk_indices.view(-1)])
-        # predicted_runtimes = target[bottom_k_positions[0], bottom_k_positions[1]].view(bs,self.k)
-        # best_predicted_runtimes = predicted_runtimes.min(1).values
-
-
         
     def compute(self) -> torch.Tensor:
-        return self.runtimes.mean()
+        return torch.cat(self.runtimes).mean()
     
 class NodeEncoder(nn.Module):
     
@@ -148,35 +139,35 @@ class NodeEncoder(nn.Module):
             node_feat : torch.Tensor,   # (num_nodes, NODE_FEATS(140))
             node_config_feat : torch.Tensor, # (num_configs, num_nodes, CONFIG_FEATS(18))
         """
-        print(batch.node_opcode.shape)
+        # print(batch.node_opcode.shape)
         opcode_embeddings = self.node_opcode_embeddings(batch.node_opcode)  # (num_nodes, embedding_size)
-        print(opcode_embeddings.shape)
+        # print(opcode_embeddings.shape)
 
-        print(batch.x.shape)
+        # print(batch.x.shape)
         nodes_feats_embeddings =  self.linear(batch.x) # (num_nodes, embedding_size)
-        print(nodes_feats_embeddings.shape)
+        # print(nodes_feats_embeddings.shape)
 
         nodes_feats_embeddings = opcode_embeddings + nodes_feats_embeddings # (num_nodes, embedding_size)
         nodes_feats_embeddings = self.nodes_layer_norm(nodes_feats_embeddings) # (num_nodes, embedding_size)
-        print(nodes_feats_embeddings.shape)
+        # print(nodes_feats_embeddings.shape)
 
         node_config_feat = self._reshape_node_config_features(batch.node_opcode, batch.node_config_feat) # (num_nodes, num_configs, CONFIG_FEATS)
-        print(f"{node_config_feat.shape=}")
+        # print(f"{node_config_feat.shape=}")
         config_feats_embeddings = self.config_feat_embeddings(node_config_feat)  # (num_nodes, num_configs, embedding_size)
         config_feats_embeddings = self.config_layer_norm(config_feats_embeddings) # (num_nodes, num_configs, embedding_size)
-        print(f"{config_feats_embeddings.shape=}")
+        # print(f"{config_feats_embeddings.shape=}")
 
         num_configs = config_feats_embeddings.shape[1] 
         nodes_feats_embeddings = nodes_feats_embeddings.unsqueeze(1) # (num_nodes, 1, embedding_size)
         nodes_feats_embeddings = nodes_feats_embeddings.repeat(1, num_configs, 1) # (num_nodes, num_configs, embedding_size)
-        print(f"{nodes_feats_embeddings.shape=}")
+        # print(f"{nodes_feats_embeddings.shape=}")
 
         nodes_feats_embeddings += config_feats_embeddings # (num_nodes, num_configs, embedding_size)
-        print(nodes_feats_embeddings.shape)
-        print(batch.batch.shape)
+        # print(nodes_feats_embeddings.shape)
+        # print(batch.batch.shape)
         batch.x = nodes_feats_embeddings
 
-        print(batch.x.shape)
+        # print(batch.x.shape)
         
         return batch
     
@@ -279,7 +270,7 @@ class TPULayoutModel(nn.Module):
 
     def forward(self, batch : Batch):
         
-        print(batch)
+        # print(batch)
         # First encode nodes + config features
         # node_encoder_output.shape = (num_nodes, num_configs, embedding_size)
         batch = self.node_encoder(batch)
@@ -308,23 +299,23 @@ class TPULayoutModel(nn.Module):
         batch = Batch.from_data_list(batch_train_list)
 
             
-        print("Before passing into PreMP:")
-        print(batch)
+        # print("Before passing into PreMP:")
+        # print(batch)
         # for graph in batch.to_data_list():
         #     print(graph)
         
         if self.pre_mp is not None:
             batch = self.pre_mp(batch)
 
-        print("Before passing into GNN layers:")
-        print(batch)
+        # print("Before passing into GNN layers:")
+        # print(batch)
         batch = self.gnn_layers(batch)
 
-        print("Before passing into Prediction Head:")
-        print(batch)
+        # print("Before passing into Prediction Head:")
+        # print(batch)
         pred, true = self.post_mp(batch)        
-        print(pred.shape, true.shape)
-        print(pred, true)
+        # print(pred.shape, true.shape)
+        # print(pred, true)
 
 
         # calculate loss:
@@ -334,8 +325,7 @@ class TPULayoutModel(nn.Module):
 
             selected_configs = batch.selected_config.view(-1, num_configs)
             true = true.view(-1, num_configs)
-            print(pred.shape, true.shape)
-            print(pred, true)
+            # print(pred.shape, true.shape)
             outputs = {'outputs': pred, 'target': true, 'order': torch.argsort(true, dim=1)}
             loss = 0
             loss += self.loss_fn(pred, true, selected_configs)
@@ -359,16 +349,15 @@ class LightningWrapper(pl.LightningModule):
 
     def training_step(self, batch : Batch, batch_idx):
         outputs = self.model(batch)
-        assert(0)
         return outputs['loss']
 
     def validation_step(self, batch : Batch, batch_idx):
+
         outputs = self.model(batch)
         loss = outputs['loss']
         self.log("val_loss", loss, prog_bar=True)
         self.kendall_tau.update(outputs['outputs'], outputs['target'],)
 
-        assert(0)
         return loss
     
     def on_validation_end(self) -> None:
@@ -376,7 +365,7 @@ class LightningWrapper(pl.LightningModule):
         kendall_tau = self.kendall_tau.compute()
         self.print(f"kendall_tau {kendall_tau:.3f}")
         self.kendall_tau.reset()
-        assert(0)
+
         return super().on_validation_end()
 
     def test_step(self, batch, batch_idx):
