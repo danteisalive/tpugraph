@@ -100,8 +100,8 @@ if __name__ == '__main__':
     
     train_dataset = TPULayoutDataset(data_dir="/home/cc/data/tpugraphs/npz", split_name='train')
     valid_dataset = TPULayoutDataset(data_dir="/home/cc/data/tpugraphs/npz", split_name='valid')
-    train_dataloader = DataLoader(train_dataset, collate_fn=LayoutCollator(), num_workers=2, batch_size=cfg.train.batch_size, shuffle=True)
-    valid_dataloader = DataLoader(valid_dataset, collate_fn=LayoutCollator(), num_workers=2, batch_size=cfg.train.batch_size)
+    train_dataloader = DataLoader(train_dataset, collate_fn=LayoutCollator(), num_workers=1, batch_size=cfg.train.batch_size, shuffle=True)
+    valid_dataloader = DataLoader(valid_dataset, collate_fn=LayoutCollator(), num_workers=1, batch_size=cfg.train.batch_size)
 
     model = get_model(cfg=cfg)
 

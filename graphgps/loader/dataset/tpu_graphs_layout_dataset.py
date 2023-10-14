@@ -37,20 +37,26 @@ class TPULayoutDataset(torch.utils.data.Dataset):
     def __init__(self, 
                  data_dir : str = "/home/cc/data/tpugraphs/npz",
                  split_name : str = 'train',
+                 search : str = 'random',
+                 dataset : str = 'xla',
                  num_configs : int = 32, 
                  max_configs : Optional[int] = None,
                  variance : float = 1e6,
                 ):
         
+        self.num_configs = num_configs
+        self.max_configs = max_configs
+        self.split_name = split_name     
+        self.search = search   
+        self.dataset = dataset
         self.data_dir = data_dir
 
         df = self._generate_layout_df()
-        query = f"split == '{split_name}'"  #TODO: train adn validation dataset should be loaded at the same time and then we do a cross validation!
+        #TODO: train adn validation dataset should be loaded at the same time and then we do a cross validation!
+        query = f"(split == '{self.split_name}') & (configuration == '{self.search}') & (extra == '{self.dataset}')"
         self.df = df.query(query).reset_index(drop=True)
         
-        self.num_configs = num_configs
-        self.max_configs = max_configs
-        self.split_name = split_name
+
 
         self.variance = variance # TODO: Placeholder for runtime normalizer
     
