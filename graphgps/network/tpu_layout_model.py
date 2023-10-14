@@ -15,6 +15,8 @@ import torchmetrics as tm
 from torch_sparse import SparseTensor
 
 from typing import Optional
+from torchmetrics.regression import KendallRankCorrCoef
+
 
 class MultiElementRankLoss(nn.Module):
     """
@@ -64,34 +66,44 @@ class MultiElementRankLoss(nn.Module):
             loss += self.calculate_rank_loss(outputs, config_runtime, config_idxs)
         return loss/ self.number_permutations
 
-class TileTopK(tm.Metric):
+
+class KendallTau(tm.Metric):
     
     higher_is_better = True
     
-    def __init__(self, k:int=5) -> None:
+    def __init__(self,) -> None:
         super().__init__()
         self.add_state("runtimes", default=[], dist_reduce_fx=None)
-        self.k = k
         
-    def update(self, preds: torch.Tensor, target: torch.Tensor, config_attn_mask:torch.Tensor) -> None:
+    def update(self, 
+               preds: torch.Tensor, # (bs, num_configs)
+               target: torch.Tensor, # (bs, num_configs)
+               ) -> None:
         """
         Update the metric state
         Args:
-            preds: Tensor of shape (bs, seq_len) with the predicted runtimes orders
-            target: Tensor of shape (bs, seq_len) with the target runtimes
-            config_attn_mask: Tensor of shape (bs, seq_len) with 1 in the positions of the elements
+            preds: Tensor of shape (bs, num_configs) with the predicted runtimes orders
+            target: Tensor of shape (bs, num_configs) with the target runtimes
         """
-        best_runtimes = torch.where(config_attn_mask==1, target, torch.tensor(float('inf'), device=config_attn_mask.device)).min(1).values
-        masked_preds = torch.where(config_attn_mask==1, preds, torch.tensor(float('inf'), device=config_attn_mask.device))
-        pred_bottomk_indices = torch.topk(masked_preds, k=self.k, largest=False).indices
         bs = preds.shape[0]
-        bottom_k_positions = torch.stack([torch.arange(bs).repeat_interleave(self.k).to(config_attn_mask.device), pred_bottomk_indices.view(-1)])
-        predicted_runtimes = target[bottom_k_positions[0], bottom_k_positions[1]].view(bs,self.k)
-        best_predicted_runtimes = predicted_runtimes.min(1).values
-        self.runtimes.append(best_predicted_runtimes/ best_runtimes)
+        _preds = preds.transpose(0,1)
+        _target = target.transpose(0,1)
+
+        kendall_tau = KendallRankCorrCoef(num_outputs=bs)(_preds, _target)
+        self.runtimes.append(kendall_tau)
+
+        # best_runtimes = torch.where(config_attn_mask==1, target, torch.tensor(float('inf'), device=config_attn_mask.device)).min(1).values
+        # masked_preds = torch.where(config_attn_mask==1, preds, torch.tensor(float('inf'), device=config_attn_mask.device))
+        # pred_bottomk_indices = torch.topk(masked_preds, k=self.k, largest=False).indices
+        # bs = preds.shape[0]
+        # bottom_k_positions = torch.stack([torch.arange(bs).repeat_interleave(self.k).to(config_attn_mask.device), pred_bottomk_indices.view(-1)])
+        # predicted_runtimes = target[bottom_k_positions[0], bottom_k_positions[1]].view(bs,self.k)
+        # best_predicted_runtimes = predicted_runtimes.min(1).values
+
+
         
     def compute(self) -> torch.Tensor:
-        return (2-torch.cat(self.runtimes)).mean()
+        return self.runtimes.mean()
     
 class NodeEncoder(nn.Module):
     
@@ -267,7 +279,7 @@ class TPULayoutModel(nn.Module):
 
     def forward(self, batch : Batch):
         
-
+        print(batch)
         # First encode nodes + config features
         # node_encoder_output.shape = (num_nodes, num_configs, embedding_size)
         batch = self.node_encoder(batch)
@@ -284,11 +296,12 @@ class TPULayoutModel(nn.Module):
                 config_x = graph.x[:, config_idx, :] # config_x.shape = (num_nodes, embedding_size)
                              
                 
-                if graph.y is None:
+                if hasattr(graph, 'y') is False:
                     config_graph = Data(edge_index=config_edge_index, x=config_x)
                 else:
-                    config_y = graph.y[config_idx]             
-                    config_graph = Data(edge_index=config_edge_index, x=config_x, y=config_y)
+                    config_y = graph.y[config_idx]       
+                    selected_config = graph.selected_configs[config_idx]      
+                    config_graph = Data(edge_index=config_edge_index, x=config_x, y=config_y, selected_config=selected_config)
                 
                 batch_train_list.append(config_graph)
 
@@ -297,41 +310,41 @@ class TPULayoutModel(nn.Module):
             
         print("Before passing into PreMP:")
         print(batch)
-        for graph in batch.to_data_list():
-            print(graph)
+        # for graph in batch.to_data_list():
+        #     print(graph)
         
-        assert(0)
-
         if self.pre_mp is not None:
             batch = self.pre_mp(batch)
 
-        assert(0)
+        print("Before passing into GNN layers:")
+        print(batch)
+        batch = self.gnn_layers(batch)
 
-        # # print("Before passing into GNN layers:")
-        # # print(batch)
-        # batch = self.gnn_layers(batch)
-
-        # # print("Before passing into Prediction Head:")
-        # # print(batch)
-        # pred, true = self.post_mp(batch)        
+        print("Before passing into Prediction Head:")
+        print(batch)
+        pred, true = self.post_mp(batch)        
+        print(pred.shape, true.shape)
+        print(pred, true)
 
 
-        # # calculate loss:
-        # pred = pred.view(-1, num_configs)
+        # calculate loss:
+        pred = pred.view(-1, num_configs)
         
-        # if config_runtime is not None:
+        if hasattr(batch, 'selected_config'):
 
-        #     selected_configs = selected_configs.view(-1, num_configs)
-        #     true = true.view(-1, num_configs)
-        #     outputs = {'outputs': pred, 'order': torch.argsort(true, dim=1)}
-        #     loss = 0
-        #     loss += self.loss_fn(pred, true, selected_configs)
-        #     outputs['loss'] = loss
+            selected_configs = batch.selected_config.view(-1, num_configs)
+            true = true.view(-1, num_configs)
+            print(pred.shape, true.shape)
+            print(pred, true)
+            outputs = {'outputs': pred, 'target': true, 'order': torch.argsort(true, dim=1)}
+            loss = 0
+            loss += self.loss_fn(pred, true, selected_configs)
+            outputs['loss'] = loss
 
-        # else:
-        #     outputs = {'outputs': pred}
+        else:
+            outputs = {'outputs': pred}
 
-        # return outputs
+        return outputs
         
 
 
@@ -339,30 +352,31 @@ class LightningWrapper(pl.LightningModule):
     def __init__(self, model:nn.Module):
         super().__init__()
         self.model = model
-        self.topk = TileTopK()
+        self.kendall_tau = KendallTau()
         
     def forward(self, batch : Batch):
         return self.model(batch)
 
-    def training_step(self, batch, batch_idx):
+    def training_step(self, batch : Batch, batch_idx):
         outputs = self.model(batch)
         assert(0)
         return outputs['loss']
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch : Batch, batch_idx):
         outputs = self.model(batch)
-        assert(0)
         loss = outputs['loss']
         self.log("val_loss", loss, prog_bar=True)
-        config_attn_mask = torch.ones_like(batch['config_runtime'], device=batch['config_runtime'].device)
-        self.topk.update(outputs['outputs'], batch['config_runtime'], config_attn_mask)
+        self.kendall_tau.update(outputs['outputs'], outputs['target'],)
 
+        assert(0)
         return loss
     
     def on_validation_end(self) -> None:
-        topk = self.topk.compute()
-        self.print(f"topk {topk:.3f}")
-        self.topk.reset()
+
+        kendall_tau = self.kendall_tau.compute()
+        self.print(f"kendall_tau {kendall_tau:.3f}")
+        self.kendall_tau.reset()
+        assert(0)
         return super().on_validation_end()
 
     def test_step(self, batch, batch_idx):

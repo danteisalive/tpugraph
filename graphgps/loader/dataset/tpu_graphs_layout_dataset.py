@@ -210,13 +210,13 @@ class LayoutCollator:
             # there will be padding if number of sample config runtimes are different
             if self.targets:
                 config_runtime = graph['config_runtime']
-
+                selected_configs = graph['selected_configs']
                 data = Data(edge_index=edge_index,              # (2, UNK)
                             x=node_feat,                        # (num_nodes, NODE_OP_CODES)
                             node_opcode=node_opcode,            # (num_nodes, )
-                            # node_feat=node_feat,                # (num_nodes, NODE_OP_CODES)
                             node_config_feat=node_config_feat,  # (num_configs * num_nodes, CONFIG_FEAT, )
-                            y=config_runtime, 
+                            y=config_runtime,                   # (num_configs,)
+                            selected_configs=selected_configs,  # (num_configs,)
                         )
                 print(f"{edge_index.shape=},{node_feat.shape=},{node_opcode.shape=},{node_config_feat.shape=},{config_runtime.shape=}")
 
@@ -225,7 +225,6 @@ class LayoutCollator:
                 data = Data(edge_index=edge_index,              # (2, UNK)
                             x=node_feat,                        # (num_nodes, NODE_OP_CODES)
                             node_opcode=node_opcode,            # (num_nodes, )
-                            # node_feat=node_feat,              # (num_nodes, NODE_OP_CODES)
                             node_config_feat=node_config_feat,  # (num_configs * num_nodes, CONFIG_FEAT, )
                         )
             
