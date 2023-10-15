@@ -102,23 +102,51 @@ class TPULayoutDataset(torch.utils.data.Dataset):
 
     def _segment_graph(self):
         for idx in range(len(self.df)):
+
+            """
+            node_feat        | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (1696, 140)
+            node_opcode      | Type: <class 'numpy.ndarray'> | Dtype: uint8    | Shape (1696,)
+            edge_index       | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (2697, 2)
+            node_config_feat | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (100040, 121, 18)
+            node_config_ids  | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (121,)
+            config_runtime   | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (100040,)  
+            node_splits      | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (1, 2)
+            """
             layout_dict =  dict(np.load(self.df.paths[idx]))
-            print(layout_dict['edge_index'])
+
+            for k, v in layout_dict.items():
+                print(k , v.shape)
+
             edge_index = layout_dict['edge_index'][:, ::-1]
+            configurable_nodes = np.sort(layout_dict['node_config_ids'])
+
+            # get the original DiGraph
+            graph = self._get_digraph(edge_index)
+
+            # find the smallest subgraph that includes all the configurable nodes
+            smallest_graph = self._smallest_subgraph_containing_nodes(graph=graph, configurable_nodes=configurable_nodes)
+
+            # Print original nodes
+            # print("Sub Graph Nodes:", sorted(smallest_graph.nodes()))
+
+            # Define a mapping to rename nodes
+            mapping = {old_name : new_name for new_name, old_name in enumerate(sorted(smallest_graph.nodes()))}
+            # print(mapping)
+            renamed_subgraph = nx.relabel_nodes(smallest_graph, mapping)
+
+            # Print renamed nodes
+            # print("Renamed Sub Graph Nodes:", sorted(renamed_subgraph.nodes()))
+
+            indexes = torch.Tensor(list(mapping.keys())).long()
+            node_feat = torch.from_numpy(layout_dict['node_feat'])[indexes, :]
+            node_opcode = torch.from_numpy(layout_dict['node_opcode'])[indexes]
+            node_config_ids = torch.Tensor([mapping[node_idx] for node_idx in layout_dict['node_config_ids']]).long()
+            edge_index = torch.from_numpy(np.array(renamed_subgraph.edges())).long()
+
+            print(f"{node_feat.shape}, {node_opcode.shape}, {node_config_ids.shape}, {edge_index.shape},")
+            print(node_config_ids)
             print(edge_index)
 
-            graph = self._get_digraph(edge_index)
-            print(graph.nodes())
-            print(graph.edges())
-            print(graph)
-
-            configurable_nodes = layout_dict['node_config_ids']
-
-
-            print(configurable_nodes)
-            smallest_graph = self._smallest_subgraph_containing_nodes(graph=graph, configurable_nodes=configurable_nodes)
-            print(smallest_graph.nodes())
-            print(smallest_graph.edges())
 
             if idx == 0: 
                 break
@@ -153,6 +181,7 @@ class TPULayoutDataset(torch.utils.data.Dataset):
         axes[1].bar(x, configurable_nodes_op_codes_count, )
         axes[1].set_xlabel(f"Configurable Nodes Opcode Count")
         axes[1].set_ylabel("Bin Count")
+
         plt.tight_layout()
 
         fig.savefig(f"opcodes_bin_count_{self.search}_{self.dataset}.pdf", dpi=300)
