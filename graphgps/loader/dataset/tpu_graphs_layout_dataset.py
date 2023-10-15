@@ -117,6 +117,10 @@ class TPULayoutDataset(torch.utils.data.Dataset):
             for k, v in layout_dict.items():
                 print(k , v.shape)
 
+
+            if "edge_index" not in layout_dict:
+                raise ValueError(f"Can't find edge_index in the dataset!")
+            
             edge_index = layout_dict['edge_index'][:, ::-1]
             configurable_nodes = np.sort(layout_dict['node_config_ids'])
 
@@ -143,13 +147,40 @@ class TPULayoutDataset(torch.utils.data.Dataset):
             node_config_ids = torch.Tensor([mapping[node_idx] for node_idx in layout_dict['node_config_ids']]).long()
             edge_index = torch.from_numpy(np.array(renamed_subgraph.edges())).long()
 
-            print(f"{node_feat.shape}, {node_opcode.shape}, {node_config_ids.shape}, {edge_index.shape},")
+
+            # if split_name == 'test, then we don't have runtimes
+            if self.split_name != 'test':
+                runtime = layout_dict["config_runtime"]
+                assert (runtime == 0).all().item() is False, "Loader Error: all emelents are 0!"
+                assert (runtime == 0).any().item() is False, "Loader Error: one emelent is 0!"
+
+            config_runtimes = torch.from_numpy(self._normalize_config_runtimes(layout_dict['config_runtime']))
+
+            print(f"{node_feat.shape}, {node_opcode.shape}, {node_config_ids.shape}, {edge_index.shape}, {config_runtimes.shape},")
             print(node_config_ids)
-            print(edge_index)
+
 
 
             if idx == 0: 
                 break
+
+
+    def _normalize_config_runtimes(self, runtimes : np.ndarray):
+        print(runtimes)
+        
+        runtimes = runtimes.astype(np.float32)
+
+        # Normalize array to [0, 1]
+        # runtimes /= np.linalg.norm(runtimes) 
+
+        # Normalize array to [-1, 1]
+        min_val = np.min(runtimes)
+        max_val = np.max(runtimes)
+        runtimes = 2 * (runtimes - min_val) / (max_val - min_val) - 1
+
+        print(runtimes)
+        
+        return runtimes  
 
     def _analyze_op_codes(self):
 
@@ -297,7 +328,7 @@ class LayoutCollator:
         zeros.scatter_reduce_(1, idxs, node_config_feat, reduce='sum')
 
         return zeros # (num_configs, num_nodes, CONFIG_FEAT)
-
+  
 
     def __call__(self, batch : List):
 
