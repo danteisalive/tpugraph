@@ -1,7 +1,10 @@
-from typing import Optional, List
+from typing import Optional, List, Union
+from matplotlib.axes import Axes
 import numpy as np
 import torch
 import pandas as pd
+import matplotlib.pyplot as plt
+import networkx as nx
 from pathlib import Path
 from dataclasses import dataclass
 from torch.nn.utils.rnn import pad_sequence
@@ -35,10 +38,10 @@ class TPULayoutDataset(torch.utils.data.Dataset):
         return self.df
 
     def __init__(self, 
-                 data_dir : str = "/home/cc/data/tpugraphs/npz",
-                 split_name : str = 'train',
-                 search : str = 'random',
-                 dataset : str = 'xla',
+                 data_dir : str,
+                 split_name : str,
+                 search : str,
+                 dataset : str,
                  num_configs : int = 32, 
                  max_configs : Optional[int] = None,
                  variance : float = 1e6,
@@ -52,7 +55,7 @@ class TPULayoutDataset(torch.utils.data.Dataset):
         self.data_dir = data_dir
 
         df = self._generate_layout_df()
-        #TODO: train adn validation dataset should be loaded at the same time and then we do a cross validation!
+        #TODO: train and validation dataset should be loaded at the same time and then we do a cross validation!
         query = f"(split == '{self.split_name}') & (configuration == '{self.search}') & (extra == '{self.dataset}')"
         self.df = df.query(query).reset_index(drop=True)
         
@@ -63,14 +66,104 @@ class TPULayoutDataset(torch.utils.data.Dataset):
     @property
     def num_sample_config(self) -> int:
         return self.num_configs
+
+    def _get_digraph(self, edge_index: np.ndarray) -> nx.DiGraph:
+        """Return the NetworkX Graph.
+
+        Parameters:
+            edge_index: edge index
+
+        Return:
+            digraph: directed graph representation of the computational
+                graph
+        """
+        edge_list = list(map(tuple, edge_index))
+        digraph = nx.DiGraph(edge_list)
+
+        return digraph
+
+    def _smallest_subgraph_containing_nodes(self,
+                                           graph : nx.DiGraph, 
+                                           configurable_nodes : List
+                                           ):
+        # Create an empty directed graph to store the result
+        minimal_graph = nx.DiGraph()
         
+        # For each pair of nodes in M, compute the shortest path
+        for i in range(len(configurable_nodes)):
+            for j in range(i+1, len(configurable_nodes)):
+                if nx.has_path(graph, configurable_nodes[i], configurable_nodes[j]):
+                    path = nx.shortest_path(graph, configurable_nodes[i], configurable_nodes[j])
+                    # Add the path to the result graph
+                    for k in range(len(path) - 1):
+                        minimal_graph.add_edge(path[k], path[k+1])
+        
+        return minimal_graph
+
+    def _segment_graph(self):
+        for idx in range(len(self.df)):
+            layout_dict =  dict(np.load(self.df.paths[idx]))
+            print(layout_dict['edge_index'])
+            edge_index = layout_dict['edge_index'][:, ::-1]
+            print(edge_index)
+
+            graph = self._get_digraph(edge_index)
+            print(graph.nodes())
+            print(graph.edges())
+            print(graph)
+
+            configurable_nodes = layout_dict['node_config_ids']
+
+
+            print(configurable_nodes)
+            smallest_graph = self._smallest_subgraph_containing_nodes(graph=graph, configurable_nodes=configurable_nodes)
+            print(smallest_graph.nodes())
+            print(smallest_graph.edges())
+
+            if idx == 0: 
+                break
+
+    def _analyze_op_codes(self):
+
+        configurable_nodes_op_codes_count = torch.zeros((121)).long()
+        all_nodes_op_codes_count = torch.zeros((self.NODE_OP_CODES+1)).long()
+        for idx in range(len(self.df)):
+            layout_dict =  dict(np.load(self.df.paths[idx]))
+            op_codes = torch.from_numpy(layout_dict['node_opcode'])
+            configurable_nodes = torch.from_numpy(layout_dict['node_config_ids'])
+
+            all_nodes_op_codes_count += torch.bincount(op_codes, minlength=self.NODE_OP_CODES+1).long()
+            configurable_nodes_op_codes_count += torch.bincount(op_codes[configurable_nodes], minlength=self.NODE_OP_CODES+1).long()
+
+        all_nodes_op_codes_count = all_nodes_op_codes_count.numpy()
+        configurable_nodes_op_codes_count = configurable_nodes_op_codes_count.numpy()
+
+        print({k:v for k,v in enumerate(all_nodes_op_codes_count) if v!=0})
+        print({k:v for k,v in enumerate(configurable_nodes_op_codes_count) if v!=0} )
+
+        
+        x = np.arange(0, self.NODE_OP_CODES+1)
+        
+        fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(16, 4))
+
+        axes[0].bar(x, all_nodes_op_codes_count, )
+        axes[0].set_xlabel(f"Nodes Opcode Count")
+        axes[0].set_ylabel("Bin Count")
+
+        axes[1].bar(x, configurable_nodes_op_codes_count, )
+        axes[1].set_xlabel(f"Configurable Nodes Opcode Count")
+        axes[1].set_ylabel("Bin Count")
+        plt.tight_layout()
+
+        fig.savefig(f"opcodes_bin_count_{self.search}_{self.dataset}.pdf", dpi=300)
+
     def __len__(self) -> int:
         return len(self.df)
     
     def _layout_loader(self, path):
-        tile_dict =  dict(np.load(path))
-        tile_dict = {k: torch.from_numpy(v) for k, v in tile_dict.items()}
-        return tile_dict    
+        layout_dict =  dict(np.load(path))
+        layout_dict = {k: torch.from_numpy(v) for k, v in layout_dict.items()}
+        return layout_dict    
 
     def select_configs(self, total_configs:int):
         if self.max_configs is not None:
