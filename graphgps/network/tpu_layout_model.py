@@ -18,6 +18,9 @@ from typing import Optional
 from torchmetrics.regression import KendallRankCorrCoef
 
 
+from typing import Any, Tuple
+import numpy as np
+
 class MultiElementRankLoss(nn.Module):
     """
     Loss function that compares the output of the model with the output of the model with a permutation of the elements
@@ -67,34 +70,57 @@ class MultiElementRankLoss(nn.Module):
         return loss/ self.number_permutations
 
 
+
 class KendallTau(tm.Metric):
     
     higher_is_better = True
     
-    def __init__(self,) -> None:
-        super().__init__()
-        self.add_state("runtimes", default=[], dist_reduce_fx=None)
+    def __init__(self, eps:float=1e-6, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.add_state("concordant", default=[], dist_reduce_fx=None)
+        self.add_state("discordant", default=[], dist_reduce_fx=None)
+        self.eps = eps
+
         
-    def update(self, 
-               preds: torch.Tensor, # (bs, num_configs)
-               target: torch.Tensor, # (bs, num_configs)
-               ) -> None:
+    def _calculate_concordant_discordant(self, 
+                                         true_sequence : torch.Tensor, 
+                                         pred_sequence : torch.Tensor
+                                        ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Update the metric state
+        Calculate the number of concordant and discordant pairs
         Args:
-            preds: Tensor of shape (bs, num_configs) with the predicted runtimes orders
-            target: Tensor of shape (bs, num_configs) with the target runtimes
+            true_sequence: Tensor of shape (bs, seq_len) with the true sequence
+            pred_sequence: Tensor of shape (bs, seq_len) with the predicted sequence
+        Returns:
+            concordant: Tensor of shape (bs,) with the number of concordant pairs
+            discordant: Tensor of shape (bs,) with the number of discordant pairs
         """
-        bs = preds.shape[0]
-        _preds = preds.transpose(0,1)
-        _target = target.transpose(0,1)
-
-        kendall_tau = KendallRankCorrCoef(num_outputs=bs)(_preds, _target)
-        self.runtimes.append(kendall_tau)
-
+        num_configs = true_sequence.shape[1]
+        tril_mask = torch.ones((num_configs, num_configs), device=true_sequence.device).tril(diagonal=-1)
+        true_diff = (true_sequence.unsqueeze(-1) - true_sequence.unsqueeze(1))
+        pred_diff = pred_sequence.unsqueeze(-1) - pred_sequence.unsqueeze(1)
+        concordant = ((true_diff * pred_diff > 0).float() * tril_mask).sum(dim=[1,2])
+        discordant = ((true_diff * pred_diff < 0).float() * tril_mask).sum(dim=[1,2])
+        return concordant, discordant
+    
+    def update(self, 
+               true_sequence:torch.Tensor, 
+               pred_sequence:torch.Tensor
+              ):
+        concordant, discordant = self._calculate_concordant_discordant(true_sequence, pred_sequence)
+        self.concordant.append(concordant)
+        self.discordant.append(discordant)
+        
+    def kendall_tau(self):
+        concordant = torch.cat(self.concordant)
+        discordant = torch.cat(self.discordant)
+        kendall_tau = (concordant - discordant) / (concordant + discordant + self.eps)
+        return kendall_tau
         
     def compute(self) -> torch.Tensor:
-        return torch.cat(self.runtimes).mean()
+        kendall_tau = self.kendall_tau()
+        return kendall_tau.mean()
+
     
 class NodeEncoder(nn.Module):
     
