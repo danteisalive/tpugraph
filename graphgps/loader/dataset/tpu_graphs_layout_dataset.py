@@ -12,6 +12,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.nn import functional as F
 from torch_geometric.data.data import Data
 from torch_geometric.data import Batch
+from torch.utils.data import  DataLoader
 
 class TPULayoutDataset(torch.utils.data.Dataset):
 
@@ -40,7 +41,7 @@ class TPULayoutDataset(torch.utils.data.Dataset):
 
     def __init__(self, 
                  data_dir : str,
-                 split_name : str,
+                 split_names : List[str],
                  search : str,
                  source : str,
                  num_configs : int = 32, 
@@ -50,7 +51,7 @@ class TPULayoutDataset(torch.utils.data.Dataset):
         
         self.num_configs = num_configs
         self.max_configs = max_configs
-        self.split_name = split_name     
+        self.split_names = split_names     
         self.search = search   
         self.source = source
         self.data_dir = data_dir
@@ -58,142 +59,20 @@ class TPULayoutDataset(torch.utils.data.Dataset):
         self.processed_paths = processed_paths + f"/layout/{self.source}/{self.search}/"
 
         df = self._generate_layout_df()
-        #TODO: train and validation dataset should be loaded at the same time and then we do a cross validation!
-        query = f"(split == '{self.split_name}') & (configuration == '{self.search}') & (extra == '{self.source}')"
+
+        query = "(" + " | ".join([f"(split == '{split_name}')" for split_name in self.split_names ]) + ")"
+        query = query + f" & (configuration == '{self.search}') & (extra == '{self.source}')"
         self.df = df.query(query).reset_index(drop=True)
         
         os.makedirs(self.processed_paths, exist_ok = True) 
+
+        print(f"Dataset has {self.split_names} samples and in total has {self.__len__()} graphs")
+
     
     @property
     def num_sample_config(self) -> int:
         return self.num_configs
 
-    def _get_digraph(self, edge_index: np.ndarray) -> nx.DiGraph:
-        """Return the NetworkX Graph.
-
-        Parameters:
-            edge_index: edge index
-
-        Return:
-            digraph: directed graph representation of the computational
-                graph
-        """
-        edge_list = list(map(tuple, edge_index))
-        digraph = nx.DiGraph(edge_list)
-
-        return digraph
-
-    def _smallest_subgraph_containing_nodes(self,
-                                           graph : nx.DiGraph, 
-                                           configurable_nodes : List
-                                           ):
-        # Create an empty directed graph to store the result
-        minimal_graph = nx.DiGraph()
-        
-        # For each pair of nodes in M, compute the shortest path
-        for i in range(len(configurable_nodes)):
-            for j in range(i+1, len(configurable_nodes)):
-                if nx.has_path(graph, configurable_nodes[i], configurable_nodes[j]):
-                    path = nx.shortest_path(graph, configurable_nodes[i], configurable_nodes[j])
-                    # Add the path to the result graph
-                    for k in range(len(path) - 1):
-                        minimal_graph.add_edge(path[k], path[k+1])
-        
-        return minimal_graph
-
-    def _process(self, idx : int):
-        
-        # if os.path.exists(self.processed_paths + "/retinanet.4x4.fp32.pt"):
-        #     layout_dict = torch.load(self.processed_paths + "/retinanet.4x4.fp32.pt")
-        #     for k, v in layout_dict.items():
-        #         print(k , v.shape)
-        #     assert(0)
-            
-        """
-            node_feat        | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (1696, 140)
-            node_opcode      | Type: <class 'numpy.ndarray'> | Dtype: uint8    | Shape (1696,)
-            edge_index       | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (2697, 2)
-            node_config_feat | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (100040, 121, 18)
-            node_config_ids  | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (121,)
-            config_runtime   | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (100040,)  
-            node_splits      | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (1, 2)
-        """
-
-        layout_dict =  dict(np.load(self.df.paths[idx]))
-
-        for k, v in layout_dict.items():
-            print(k , v.shape)
-
-
-        if "edge_index" not in layout_dict:
-            raise ValueError(f"Can't find edge_index in the dataset!")
-            
-        edge_index = layout_dict['edge_index'][:, ::-1]
-        configurable_nodes = np.sort(layout_dict['node_config_ids'])
-
-        # get the original DiGraph
-        graph = self._get_digraph(edge_index)
-
-        # find the smallest subgraph that includes all the configurable nodes
-        smallest_graph = self._smallest_subgraph_containing_nodes(graph=graph, configurable_nodes=configurable_nodes)
-
-        # Print original nodes
-        # print("Sub Graph Nodes:", sorted(smallest_graph.nodes()))
-
-        # Define a mapping to rename nodes
-        mapping = {old_name : new_name for new_name, old_name in enumerate(sorted(smallest_graph.nodes()))}
-        # print(mapping)
-        renamed_subgraph = nx.relabel_nodes(smallest_graph, mapping)
-
-        # Print renamed nodes
-        # print("Renamed Sub Graph Nodes:", sorted(renamed_subgraph.nodes()))
-
-        indexes = torch.Tensor(list(mapping.keys())).long()
-        node_feat = torch.from_numpy(layout_dict['node_feat'])[indexes, :]
-        node_opcode = torch.from_numpy(layout_dict['node_opcode'])[indexes]
-        node_config_ids = torch.Tensor([mapping[node_idx] for node_idx in layout_dict['node_config_ids']]).long()
-        edge_index = torch.from_numpy(np.array(renamed_subgraph.edges())).long()
-        node_config_feat = torch.from_numpy(layout_dict['node_config_feat'])
-
-        # if split_name == 'test, then we don't have runtimes
-        if self.split_name != 'test':
-            runtime = layout_dict["config_runtime"]
-            assert (runtime == 0).all().item() is False, "Loader Error: all emelents are 0!"
-            assert (runtime == 0).any().item() is False, "Loader Error: one emelent is 0!"
-
-        config_runtimes = torch.from_numpy(self._normalize_config_runtimes(layout_dict['config_runtime']))
-
-        print(f"{node_feat.shape=}, {node_opcode.shape=}, {node_config_ids.shape=}, {edge_index.shape=}, {config_runtimes.shape=}, {node_config_feat.shape=},")
-        print(node_config_ids)
-
-        data = {
-                'node_opcode': node_opcode,
-                'node_feat': node_feat,
-                'node_config_ids': node_config_ids,
-                'edge_index': edge_index,
-                'node_config_feat': node_config_feat,
-                'config_runtime': config_runtimes,
-        }   
-
-        torch.save(data, self.processed_paths + self.df.model_name[idx] + ".pt")
-
-        return data
-            
-
-
-    def _normalize_config_runtimes(self, runtimes : np.ndarray):
-        
-        runtimes = runtimes.astype(np.float32)
-
-        # Normalize array to [0, 1]
-        # runtimes /= np.linalg.norm(runtimes) 
-
-        # Normalize array to [-1, 1]
-        min_val = np.min(runtimes)
-        max_val = np.max(runtimes)
-        runtimes = 2 * (runtimes - min_val) / (max_val - min_val) - 1
-        
-        return runtimes  
 
     def _analyze_op_codes(self):
 
@@ -230,6 +109,141 @@ class TPULayoutDataset(torch.utils.data.Dataset):
 
         fig.savefig(f"opcodes_bin_count_{self.search}_{self.source}.pdf", dpi=300)
 
+    """
+    A helper function to prepare daatset pt files
+    """
+    def preprocess(self):
+        for idx in range(self.__len__()):
+            self._process(idx=idx)
+
+    def _get_digraph(self, edge_index: np.ndarray) -> nx.DiGraph:
+        """Return the NetworkX Graph.
+
+        Parameters:
+            edge_index: edge index
+
+        Return:
+            digraph: directed graph representation of the computational
+                graph
+        """
+        edge_list = list(map(tuple, edge_index))
+        digraph = nx.DiGraph(edge_list)
+
+        return digraph
+
+    def _smallest_subgraph_containing_nodes(self,
+                                           graph : nx.DiGraph, 
+                                           configurable_nodes : List
+                                           ):
+        # Create an empty directed graph to store the result
+        minimal_graph = nx.DiGraph()
+        
+        # For each pair of nodes in M, compute the shortest path
+        for i in range(len(configurable_nodes)):
+            for j in range(i+1, len(configurable_nodes)):
+                if nx.has_path(graph, configurable_nodes[i], configurable_nodes[j]):
+                    path = nx.shortest_path(graph, configurable_nodes[i], configurable_nodes[j])
+                    # Add the path to the result graph
+                    for k in range(len(path) - 1):
+                        minimal_graph.add_edge(path[k], path[k+1])
+        
+        return minimal_graph
+
+    def _process(self, idx : int):
+           
+        """
+            node_feat        | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (1696, 140)
+            node_opcode      | Type: <class 'numpy.ndarray'> | Dtype: uint8    | Shape (1696,)
+            edge_index       | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (2697, 2)
+            node_config_feat | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (100040, 121, 18)
+            node_config_ids  | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (121,)
+            config_runtime   | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (100040,)  
+            node_splits      | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (1, 2)
+        """
+
+        layout_dict =  dict(np.load(self.df.paths[idx]))
+
+        print(f"Loading dataset: {self.df.paths[idx]}")
+        for k, v in layout_dict.items():
+            print(k , v.shape)
+
+
+        if "edge_index" not in layout_dict:
+            raise ValueError(f"Can't find edge_index in the dataset!")
+            
+        edge_index = layout_dict['edge_index'][:, ::-1]
+        print(edge_index[:,:])
+        configurable_nodes = np.sort(layout_dict['node_config_ids'])
+        print(configurable_nodes)
+
+        # get the original DiGraph
+        graph = self._get_digraph(edge_index)
+
+        # find the smallest subgraph that includes all the configurable nodes
+        smallest_graph = self._smallest_subgraph_containing_nodes(graph=graph, configurable_nodes=configurable_nodes)
+
+        # Print original nodes
+        # print("Sub Graph Nodes:", sorted(smallest_graph.nodes()))
+
+        # Define a mapping to rename nodes
+        mapping = {old_name : new_name for new_name, old_name in enumerate(sorted(smallest_graph.nodes()))}
+        print(mapping)
+        renamed_subgraph = nx.relabel_nodes(smallest_graph, mapping)
+
+        # Print renamed nodes
+        # print("Renamed Sub Graph Nodes:", sorted(renamed_subgraph.nodes()))
+
+        indexes = torch.Tensor(list(mapping.keys())).long()
+        node_feat = torch.from_numpy(layout_dict['node_feat'])[indexes, :]
+        node_opcode = torch.from_numpy(layout_dict['node_opcode'])[indexes]
+        node_config_ids = torch.Tensor([mapping[node_idx] for node_idx in layout_dict['node_config_ids']]).long()
+        edge_index = torch.from_numpy(np.array(renamed_subgraph.edges())).long()
+        node_config_feat = torch.from_numpy(layout_dict['node_config_feat'])
+
+        # if split_name == 'test, then we don't have runtimes
+        if 'test' not in self.split_names:
+            runtime = layout_dict["config_runtime"]
+            assert (runtime == 0).all().item() is False, "Loader Error: all emelents are 0!"
+            assert (runtime == 0).any().item() is False, "Loader Error: one emelent is 0!"
+
+        config_runtimes = torch.from_numpy(self._normalize_config_runtimes(layout_dict['config_runtime']))
+
+        print(f"{node_feat.shape=}, {node_opcode.shape=}, {node_config_ids.shape=}, {edge_index.shape=}, {config_runtimes.shape=}, {node_config_feat.shape=},")
+        print(node_config_ids)
+
+        data = {
+                'node_opcode': node_opcode,
+                'node_feat': node_feat,
+                'node_config_ids': node_config_ids,
+                'edge_index': edge_index,
+                'node_config_feat': node_config_feat,
+                'config_runtime': config_runtimes,
+        }   
+
+        torch.save(data, self.processed_paths + self.df.model_name[idx] + ".pt")
+        
+        for k, v in data.items():
+            print(k , v.shape)
+        
+        return data
+            
+
+
+    def _normalize_config_runtimes(self, runtimes : np.ndarray):
+        
+        runtimes = runtimes.astype(np.float32)
+
+        # Normalize array to [0, 1]
+        # runtimes /= np.linalg.norm(runtimes) 
+
+        # Normalize array to [-1, 1]
+        min_val = np.min(runtimes)
+        max_val = np.max(runtimes)
+        runtimes = 2 * (runtimes - min_val) / (max_val - min_val) - 1
+        
+        return runtimes  
+
+
     def __len__(self) -> int:
         return len(self.df)
     
@@ -257,10 +271,11 @@ class TPULayoutDataset(torch.utils.data.Dataset):
         node_config_ids  | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (121,)
         config_runtime   | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (100040,)  
         """        
+        # load the data if it's already processed and stored as pt file
         if os.path.exists(self.processed_paths + self.df.model_name[idx] + ".pt"):
             layout_dict = torch.load(self.processed_paths + self.df.model_name[idx] + ".pt")
         else:
-            layout_dict = self._process(idx) # we should pass the idx
+            layout_dict = self._process(idx)
 
         if selected_configs is None:
             selected_configs = self.select_configs(layout_dict['node_config_feat'].shape[0])
@@ -319,7 +334,7 @@ class LayoutCollator:
             [-1.1034,  1.6864],
             [ 0.0000,  0.0000]]])
     """
-    def _ransform_node_config_features(self, 
+    def _transform_node_config_features(self, 
                                        node_config_feat : torch.Tensor, # (num_configs, number_of_configurable_nodes, CONFIG_FEAT)
                                        node_config_ids : torch.Tensor, # (number_of_configurable_nodes,)
                                        num_nodes : int):
@@ -353,18 +368,15 @@ class LayoutCollator:
             amount_of_padding = 0 if original_num_nodes % self.segment_size == 0 else self.segment_size - original_num_nodes % self.segment_size
             node_opcode = F.pad(graph['node_opcode'], (0, amount_of_padding), value=self.PADDING_VALUE).long()
 
-            node_feat    = F.pad(graph['node_feat'], (0,0, 0, amount_of_padding), value=self.PADDING_VALUE)
+            node_feat = F.pad(graph['node_feat'], (0,0, 0, amount_of_padding), value=self.PADDING_VALUE)
             
-            # edges = graph['edge_index']
-            # filtered_edges = edges[(edges[:, 0] >= 50) & (edges[:, 0] <= 100) & (edges[:, 1] >= 50) & (edges[:, 1] <= 100)]
-
             edge_index   = graph['edge_index'].T
             
             num_nodes = node_opcode.shape[0]
             assert num_nodes % self.segment_size == 0, ""
             node_config_ids = graph['node_config_ids'].long()
             node_config_feat = graph['node_config_feat']
-            node_config_feat = self._ransform_node_config_features(node_config_feat, node_config_ids, num_nodes)  # (num_configs, num_nodes, CONFIG_FEAT)
+            node_config_feat = self._transform_node_config_features(node_config_feat, node_config_ids, num_nodes)  # (num_configs, num_nodes, CONFIG_FEAT)
             num_config_features = node_config_feat.shape[2]
             node_config_feat = node_config_feat.view(-1, num_config_features) # (num_configs * num_nodes, CONFIG_FEAT)
 
@@ -400,5 +412,7 @@ class LayoutCollator:
 
 
 if __name__ == '__main__':
-    dataset = TPULayoutDataset()
-    import pdb; pdb.set_trace()
+    dataset = TPULayoutDataset(data_dir="/home/cc/data/tpugraphs/npz", split_names=['train', 'valid'], search='random', source='xla',)
+    dataset.preprocess()
+    # train_dataloader = DataLoader(dataset, collate_fn=LayoutCollator(), num_workers=1, batch_size=2, shuffle=True)
+    # import pdb; pdb.set_trace()
