@@ -114,7 +114,10 @@ class TPULayoutDataset(torch.utils.data.Dataset):
     """
     def preprocess(self):
         for idx in range(self.__len__()):
-            self._process(idx=idx)
+            if os.path.exists(self.processed_paths + self.df.model_name[idx] + ".pt"):
+                print(f"{self.processed_paths + self.df.model_name[idx]}.pt already exists!")
+            else:
+                layout_dict = self._process(idx)
 
     def _get_digraph(self, edge_index: np.ndarray) -> nx.DiGraph:
         """Return the NetworkX Graph.
@@ -133,16 +136,37 @@ class TPULayoutDataset(torch.utils.data.Dataset):
 
     def _smallest_subgraph_containing_nodes(self,
                                            graph : nx.DiGraph, 
-                                           configurable_nodes : List
+                                           configurable_nodes : List,
                                            ):
+        
         # Create an empty directed graph to store the result
         minimal_graph = nx.DiGraph()
+
+        # Find terminal nodes (sink nodes)
+        terminal_nodes = [node for node, out_degree in graph.out_degree() if out_degree == 0]
+
+        # print(f"{configurable_nodes=}")
+        # print(f"{terminal_nodes=}")
+        
+        # first find all the shortest path from confgiruable nodes to terminal nodes
+        for i in range(len(configurable_nodes)):
+            for j in range(len(terminal_nodes)):
+                if nx.has_path(graph, configurable_nodes[i], terminal_nodes[j]):
+                    path = nx.shortest_path(graph, configurable_nodes[i], terminal_nodes[j])
+                    assert len(path) > 1, f"Path size should be greater than one! {path=}, {configurable_nodes[i]=}, {terminal_nodes[j]=}"
+                    # Add the path to the result graph
+                    for k in range(len(path) - 1):
+                        minimal_graph.add_edge(path[k], path[k+1])
+        
+        assert set(configurable_nodes).issubset(minimal_graph.nodes()), "Can't find all the configurable nodes!"
+
         
         # For each pair of nodes in M, compute the shortest path
         for i in range(len(configurable_nodes)):
             for j in range(i+1, len(configurable_nodes)):
                 if nx.has_path(graph, configurable_nodes[i], configurable_nodes[j]):
                     path = nx.shortest_path(graph, configurable_nodes[i], configurable_nodes[j])
+                    assert len(path) > 1, f"Path size should be greater than one! {len(path)}"
                     # Add the path to the result graph
                     for k in range(len(path) - 1):
                         minimal_graph.add_edge(path[k], path[k+1])
@@ -172,22 +196,24 @@ class TPULayoutDataset(torch.utils.data.Dataset):
             raise ValueError(f"Can't find edge_index in the dataset!")
             
         edge_index = layout_dict['edge_index'][:, ::-1]
-        print(edge_index[:,:])
         configurable_nodes = np.sort(layout_dict['node_config_ids'])
-        print(configurable_nodes)
+
 
         # get the original DiGraph
         graph = self._get_digraph(edge_index)
 
+        # print("weakly_connected_components: ", len(list(nx.weakly_connected_components(graph))))
         # find the smallest subgraph that includes all the configurable nodes
-        smallest_graph = self._smallest_subgraph_containing_nodes(graph=graph, configurable_nodes=configurable_nodes)
+        smallest_graph = self._smallest_subgraph_containing_nodes(graph=graph, 
+                                                                  configurable_nodes=configurable_nodes,
+                                                                  )
 
         # Print original nodes
         # print("Sub Graph Nodes:", sorted(smallest_graph.nodes()))
 
         # Define a mapping to rename nodes
         mapping = {old_name : new_name for new_name, old_name in enumerate(sorted(smallest_graph.nodes()))}
-        print(mapping)
+        # print(mapping)
         renamed_subgraph = nx.relabel_nodes(smallest_graph, mapping)
 
         # Print renamed nodes
@@ -208,8 +234,8 @@ class TPULayoutDataset(torch.utils.data.Dataset):
 
         config_runtimes = torch.from_numpy(self._normalize_config_runtimes(layout_dict['config_runtime']))
 
-        print(f"{node_feat.shape=}, {node_opcode.shape=}, {node_config_ids.shape=}, {edge_index.shape=}, {config_runtimes.shape=}, {node_config_feat.shape=},")
-        print(node_config_ids)
+        # print(f"{node_feat.shape=}, {node_opcode.shape=}, {node_config_ids.shape=}, {edge_index.shape=}, {config_runtimes.shape=}, {node_config_feat.shape=},")
+        # print(node_config_ids)
 
         data = {
                 'node_opcode': node_opcode,
