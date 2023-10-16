@@ -109,15 +109,18 @@ class TPULayoutDataset(torch.utils.data.Dataset):
 
         fig.savefig(f"opcodes_bin_count_{self.search}_{self.source}.pdf", dpi=300)
 
+    def worker(self, idx):
+        return self._process(idx)
     """
     A helper function to prepare daatset pt files
     """
     def preprocess(self):
-        for idx in range(self.__len__()):
-            if os.path.exists(self.processed_paths + self.df.model_name[idx] + ".pt"):
-                print(f"{self.processed_paths + self.df.model_name[idx]}.pt already exists!")
-            else:
-                layout_dict = self._process(idx)
+
+        import multiprocessing
+
+        with multiprocessing.Pool(48) as pool:
+            results = pool.map(self.worker, range(self.__len__()))
+
 
     def _get_digraph(self, edge_index: np.ndarray) -> nx.DiGraph:
         """Return the NetworkX Graph.
@@ -174,7 +177,10 @@ class TPULayoutDataset(torch.utils.data.Dataset):
         return minimal_graph
 
     def _process(self, idx : int):
-           
+
+        if os.path.exists(self.processed_paths + self.df.model_name[idx] + ".pt"):
+            print(f"{self.processed_paths + self.df.model_name[idx]}.pt already exists!")
+            return torch.load(self.processed_paths + self.df.model_name[idx] + ".pt")
         """
             node_feat        | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (1696, 140)
             node_opcode      | Type: <class 'numpy.ndarray'> | Dtype: uint8    | Shape (1696,)
@@ -297,11 +303,7 @@ class TPULayoutDataset(torch.utils.data.Dataset):
         node_config_ids  | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (121,)
         config_runtime   | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (100040,)  
         """        
-        # load the data if it's already processed and stored as pt file
-        if os.path.exists(self.processed_paths + self.df.model_name[idx] + ".pt"):
-            layout_dict = torch.load(self.processed_paths + self.df.model_name[idx] + ".pt")
-        else:
-            layout_dict = self._process(idx)
+        layout_dict = self._process(idx)
 
         if selected_configs is None:
             selected_configs = self.select_configs(layout_dict['node_config_feat'].shape[0])
