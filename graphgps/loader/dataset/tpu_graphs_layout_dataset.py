@@ -181,6 +181,10 @@ class TPULayoutDataset(torch.utils.data.Dataset):
         if os.path.exists(self.processed_paths + self.df.model_name[idx] + ".pt"):
             print(f"{self.processed_paths + self.df.model_name[idx]}.pt already exists!")
             return torch.load(self.processed_paths + self.df.model_name[idx] + ".pt")
+        else:
+            raise RuntimeError("Please preprocess the dataset! \
+                               If you are here it means you are running preprocessing and training at the same time!")
+
         """
             node_feat        | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (1696, 140)
             node_opcode      | Type: <class 'numpy.ndarray'> | Dtype: uint8    | Shape (1696,)
@@ -296,8 +300,8 @@ class TPULayoutDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx:int, selected_configs:List[int]=None):
         
         """
-        node_feat        | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (1696, 140)
         node_opcode      | Type: <class 'numpy.ndarray'> | Dtype: uint8    | Shape (1696,)
+        node_feat        | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (1696, 140)
         edge_index       | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (2697, 2)
         node_config_feat | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (100040, 121, 18)
         node_config_ids  | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (121,)
@@ -329,6 +333,8 @@ class LayoutCollator:
                  segment_size : int = 1000,
                  ):
         self.segment_size = segment_size
+
+
     """
     This function takes the layout `node_config_feat` tensor which has the shape of 
     (num_configs, number_of_configurable_nodes, CONFIG_FEAT) and converts it into 
@@ -336,10 +342,8 @@ class LayoutCollator:
     Inputs: 
     node_config_feat = tensor([[[ 0.4851,  1.7761],
             [ 0.7147,  1.3434]],
-
             [[ 1.7586, -0.7400],
             [ 0.5283, -1.2116]],
-
             [[ 0.9315,  1.1156],
             [-1.1034,  1.6864]]])
 
@@ -351,12 +355,10 @@ class LayoutCollator:
             [ 0.4851,  1.7761],
             [ 0.7147,  1.3434],
             [ 0.0000,  0.0000]],
-
             [[ 0.0000,  0.0000],
             [ 1.7586, -0.7400],
             [ 0.5283, -1.2116],
             [ 0.0000,  0.0000]],
-
             [[ 0.0000,  0.0000],
             [ 0.9315,  1.1156],
             [-1.1034,  1.6864],
@@ -365,7 +367,7 @@ class LayoutCollator:
     def _transform_node_config_features(self, 
                                        node_config_feat : torch.Tensor, # (num_configs, number_of_configurable_nodes, CONFIG_FEAT)
                                        node_config_ids : torch.Tensor, # (number_of_configurable_nodes,)
-                                       num_nodes : int):
+                                       num_nodes : int): # total number of nodes in the graph
         
         num_configs, _,  num_config_feat = node_config_feat.shape
         zeros = torch.zeros(num_configs, num_nodes, num_config_feat)
@@ -382,10 +384,9 @@ class LayoutCollator:
         node_opcode      | Type: <class 'numpy.ndarray'> | Dtype: uint8    | Shape (1696,)
         node_feat        | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (1696, 140)
         edge_index       | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (2697, 2)
-        node_config_feat | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (num_configs, 121, 18)
+        node_config_feat | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (num_selected_configs, 121, 18)
         node_config_ids  | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (121,)
-        config_runtime   | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (num_configs,)
-        node_splits      | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (1, 2)
+        config_runtime   | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (num_selected_configs,)
         """    
 
 
@@ -404,9 +405,10 @@ class LayoutCollator:
             assert num_nodes % self.segment_size == 0, ""
             node_config_ids = graph['node_config_ids'].long()
             node_config_feat = graph['node_config_feat']
-            node_config_feat = self._transform_node_config_features(node_config_feat, node_config_ids, num_nodes)  # (num_configs, num_nodes, CONFIG_FEAT)
-            num_config_features = node_config_feat.shape[2]
-            node_config_feat = node_config_feat.view(-1, num_config_features) # (num_configs * num_nodes, CONFIG_FEAT)
+            node_config_feat = self._transform_node_config_features(node_config_feat, node_config_ids, num_nodes)  # (num_selected_configs, num_nodes, CONFIG_FEAT)
+            
+            assert node_config_feat.shape[2] == self.CONFIG_FEATS, ""
+            node_config_feat = node_config_feat.view(-1, self.CONFIG_FEATS) # (num_selected_configs * num_nodes, CONFIG_FEAT)
 
 
             # there will be padding if number of sample config runtimes are different
@@ -416,18 +418,18 @@ class LayoutCollator:
                 data = Data(edge_index=edge_index,              # (2, UNK)
                             x=node_feat,                        # (num_nodes, NODE_OP_CODES)
                             node_opcode=node_opcode,            # (num_nodes, )
-                            node_config_feat=node_config_feat,  # (num_configs * num_nodes, CONFIG_FEAT, )
-                            y=config_runtime,                   # (num_configs,)
-                            selected_configs=selected_configs,  # (num_configs,)
+                            node_config_feat=node_config_feat,  # (num_selected_configs * num_nodes, CONFIG_FEAT, )
+                            y=config_runtime,                   # (num_selected_configs,)
+                            selected_configs=selected_configs,  # (num_selected_configs,)
                         )
-                # print(f"{edge_index.shape=},{node_feat.shape=},{node_opcode.shape=},{node_config_feat.shape=},{config_runtime.shape=}")
+                print(f"{edge_index.shape=},{node_feat.shape=},{node_opcode.shape=},{node_config_feat.shape=},{config_runtime.shape=}")
 
             else:
 
                 data = Data(edge_index=edge_index,              # (2, UNK)
                             x=node_feat,                        # (num_nodes, NODE_OP_CODES)
                             node_opcode=node_opcode,            # (num_nodes, )
-                            node_config_feat=node_config_feat,  # (num_configs * num_nodes, CONFIG_FEAT, )
+                            node_config_feat=node_config_feat,  # (num_selected_configs * num_nodes, CONFIG_FEAT, )
                         )
             
             data.validate(raise_on_error=True)
