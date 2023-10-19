@@ -129,14 +129,13 @@ class NodeEncoder(nn.Module):
     CONFIG_FEATS = 18
 
     def _reshape_node_config_features(self,
-                                      node_opcodes : torch.Tensor,     # (num_nodes, )
-                                      node_config_feat : torch.Tensor  # (num_configs * num_nodes, CONFIG_FEAT, )
+                                      node_config_feat : torch.Tensor,  # (num_configs * num_nodes, CONFIG_FEAT, )
+                                      num_nodes : int,     # total number of nodes in this batch
                                       ):
             
-            num_nodes = node_opcodes.shape[0]
             assert node_config_feat.shape[0] % num_nodes == 0, ""
-
             num_configs = node_config_feat.shape[0] // num_nodes
+
             node_config_feat_reshaped = node_config_feat.view(num_configs, num_nodes, -1) # (num_configs, num_nodes, CONFIG_FEAT, )
             node_config_feat_reshaped = node_config_feat_reshaped.transpose(0,1) # (num_nodes, num_configs, CONFIG_FEAT, )
             return node_config_feat_reshaped  
@@ -150,7 +149,7 @@ class NodeEncoder(nn.Module):
         self.layer_norm_eps = layer_norm_eps
 
         # layers for node op code and features
-        self.node_opcode_embeddings = nn.Embedding(self.NODE_OP_CODES+2 , self.embedding_size, padding_idx=self.NODE_OP_CODES+1) # We have 122 opcodes (121 from dataset + 1 dummy opcode for padding)
+        self.node_opcode_embeddings = nn.Embedding(self.NODE_OP_CODES+2 , self.embedding_size, padding_idx=self.NODE_OP_CODES+1) # We have 122 opcodes (121 from dataset (0 tp 120) + 1 dummy opcode for padding)
         self.linear = nn.Linear(self.NODE_FEATS, self.embedding_size, bias=False)
         self.nodes_layer_norm = nn.LayerNorm(embedding_size, eps=self.layer_norm_eps)
         
@@ -161,7 +160,7 @@ class NodeEncoder(nn.Module):
     def forward(self, batch : Batch):
         
         """
-            node_opcode : torch.Tensor, # (num_nodes)
+            node_opcode : torch.Tensor, # (num_nodes,)
             node_feat : torch.Tensor,   # (num_nodes, NODE_FEATS(140))
             node_config_feat : torch.Tensor, # (num_configs, num_nodes, CONFIG_FEATS(18))
         """
@@ -177,7 +176,10 @@ class NodeEncoder(nn.Module):
         nodes_feats_embeddings = self.nodes_layer_norm(nodes_feats_embeddings) # (num_nodes, embedding_size)
         # print(nodes_feats_embeddings.shape)
 
-        node_config_feat = self._reshape_node_config_features(batch.node_opcode, batch.node_config_feat) # (num_nodes, num_configs, CONFIG_FEATS)
+        num_nodes = batch.node_opcode.shape[0]
+        node_config_feat = self._reshape_node_config_features(batch.node_config_feat, # (num_nodes, num_configs, CONFIG_FEATS)
+                                                              num_nodes=num_nodes,
+                                                              ) 
         # print(f"{node_config_feat.shape=}")
         config_feats_embeddings = self.config_feat_embeddings(node_config_feat)  # (num_nodes, num_configs, embedding_size)
         config_feats_embeddings = self.config_layer_norm(config_feats_embeddings) # (num_nodes, num_configs, embedding_size)
@@ -305,17 +307,19 @@ class TPULayoutModel(nn.Module):
         batch_train_list = []
         for graph in batch.to_data_list():
 
-            config_edge_index = graph.edge_index
+            config_edge_index = graph.edge_index #TODO: esges should be from DEST to SRC or vice versa?
             num_configs = graph.x.shape[1]  # x.shape = (num_nodes, num_configs, embedding_size)
 
             for config_idx in range(num_configs):
 
                 config_x = graph.x[:, config_idx, :] # config_x.shape = (num_nodes, embedding_size)
                              
-                
+                # test data
                 if hasattr(graph, 'y') is False:
                     config_graph = Data(edge_index=config_edge_index, x=config_x)
-                else:
+
+                # train and valid data
+                else: 
                     config_y = graph.y[config_idx]       
                     selected_config = graph.selected_configs[config_idx]      
                     config_graph = Data(edge_index=config_edge_index, x=config_x, y=config_y, selected_config=selected_config)
@@ -342,7 +346,6 @@ class TPULayoutModel(nn.Module):
         pred, true = self.post_mp(batch)        
         # print(pred.shape, true.shape)
         # print(pred, true)
-
 
         # calculate loss:
         pred = pred.view(-1, num_configs)

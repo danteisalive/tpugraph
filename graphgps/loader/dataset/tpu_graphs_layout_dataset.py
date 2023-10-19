@@ -422,7 +422,17 @@ class LayoutCollator:
                             y=config_runtime,                   # (num_selected_configs,)
                             selected_configs=selected_configs,  # (num_selected_configs,)
                         )
-                print(f"{edge_index.shape=},{node_feat.shape=},{node_opcode.shape=},{node_config_feat.shape=},{config_runtime.shape=}")
+                # print(f"{edge_index.shape=}, \
+                #       {edge_index.dtype=}, \
+                #       {node_feat.shape=},\
+                #       {node_feat.dtype=},\
+                #       {node_opcode.shape=},\
+                #       {node_opcode.dtype=},\
+                #       {node_config_feat.shape=},\
+                #       {node_config_feat.dtype=},\
+                #       {config_runtime.shape=},\
+                #       {config_runtime.dtype=}"
+                #       )
 
             else:
 
@@ -434,7 +444,6 @@ class LayoutCollator:
             
             data.validate(raise_on_error=True)
             batch_list.append(data)
-
 
         return Batch.from_data_list(batch_list)
 
