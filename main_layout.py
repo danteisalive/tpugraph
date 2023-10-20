@@ -27,7 +27,7 @@ from torch_geometric import seed_everything
 
 
 from graphgps.loader.dataset.tpu_graphs_layout_dataset import (TPULayoutDataset, LayoutCollator)
-from torch.utils.data import  DataLoader
+from torch.utils.data import  DataLoader, Subset
 from torch_geometric.data import Batch
 from torch.nn import functional as F
 from graphgps.logger import create_logger
@@ -38,6 +38,8 @@ import numpy as np
 import pandas as pd
 
 from graphgps.network.tpu_layout_model import get_model
+
+from sklearn.model_selection import KFold
 
 def new_optimizer_config(cfg):
     return OptimizerConfig(optimizer=cfg.optim.optimizer,
@@ -86,6 +88,36 @@ def custom_set_run_dir(cfg, run_id):
         makedirs_rm_exist(cfg.run_dir)
 
 
+class KFoldDataModule(pl.LightningDataModule):
+
+    def __init__(self, 
+                 dataset, 
+                 train_indices, 
+                 val_indices, 
+                 batch_size=4
+                 ):
+        super(KFoldDataModule, self).__init__()
+
+        self.dataset = dataset
+        self.train_indices = train_indices
+        self.val_indices = val_indices
+        self.batch_size = batch_size
+
+    def train_dataloader(self):
+        return DataLoader(Subset(self.dataset, self.train_indices), 
+                          batch_size=self.batch_size, 
+                          shuffle=True,
+                          num_workers=1,
+                          collate_fn=LayoutCollator(),
+                          )
+
+    def val_dataloader(self):
+        return DataLoader(Subset(self.dataset, self.val_indices), 
+                          batch_size=self.batch_size,
+                          num_workers=1,
+                          collate_fn=LayoutCollator(),
+                          )
+
 if __name__ == '__main__':
     # Load cmd line args
     args = parse_args()
@@ -96,32 +128,58 @@ if __name__ == '__main__':
     dump_cfg(cfg)
     
     loggers = create_logger()
-    
-    
-    train_dataset = TPULayoutDataset(data_dir="/home/cc/data/tpugraphs/npz", split_names=['train'], search='random', source='xla',)
-    valid_dataset = TPULayoutDataset(data_dir="/home/cc/data/tpugraphs/npz", split_names=['valid'], search='random', source='xla',)
-    train_dataloader = DataLoader(train_dataset, collate_fn=LayoutCollator(), num_workers=1, batch_size=cfg.train.batch_size, shuffle=True)
-    valid_dataloader = DataLoader(valid_dataset, collate_fn=LayoutCollator(), num_workers=1, batch_size=cfg.train.batch_size)
+    enable_cross_validation = True
 
-    model = get_model(cfg=cfg)
+    if enable_cross_validation:
 
-    # print(model)
-    logging.info(model)
-    logging.info(cfg)
-    
-    pl.seed_everything(42)
-    trainer_config = dict(
-        max_epochs= 40,
-        precision= 32,
-        gradient_clip_val= 1.0,
-        accumulate_grad_batches= 1,
-        check_val_every_n_epoch= 1)
+        dataset = TPULayoutDataset(data_dir="/home/cc/data/tpugraphs/npz", split_names=['train', 'valid'], search='random', source='xla',)
+        model = get_model(cfg=cfg)
+        
+        # Assume dataset is your torch.utils.data.Dataset
+        kf = KFold(n_splits=5, shuffle=True, random_state=42)
+        for fold, (train_indices, val_indices) in enumerate(kf.split(dataset)):
+            print(f"Training fold {fold + 1}")
 
-    torch.set_float32_matmul_precision("medium")
-    trainer = pl.Trainer(**trainer_config,)
-    trainer.fit(model, train_dataloader, valid_dataloader)
+            datamodule = KFoldDataModule(dataset, train_indices, val_indices, cfg.train.batch_size)
+            
+            trainer_config = dict(
+                max_epochs=5,
+                precision=32,
+                gradient_clip_val= 1.0,
+                accumulate_grad_batches=1,
+                check_val_every_n_epoch=5,
+                log_every_n_steps=1,)
 
+            torch.set_float32_matmul_precision("medium")
+            trainer = pl.Trainer(**trainer_config,)
 
+            trainer.fit(model, datamodule)
+
+    else:
+        
+        train_dataset = TPULayoutDataset(data_dir="/home/cc/data/tpugraphs/npz", split_names=['train'], search='random', source='xla',)
+        valid_dataset = TPULayoutDataset(data_dir="/home/cc/data/tpugraphs/npz", split_names=['valid'], search='random', source='xla',)
+        train_dataloader = DataLoader(train_dataset, collate_fn=LayoutCollator(), num_workers=1, batch_size=cfg.train.batch_size, shuffle=True)
+        valid_dataloader = DataLoader(valid_dataset, collate_fn=LayoutCollator(), num_workers=1, batch_size=cfg.train.batch_size)
+
+        model = get_model(cfg=cfg)
+
+        # print(model)
+        logging.info(model)
+        logging.info(cfg)
+        
+        pl.seed_everything(42)
+        trainer_config = dict(
+            max_epochs= 40,
+            precision= 32,
+            gradient_clip_val= 1.0,
+            accumulate_grad_batches= 1,
+            check_val_every_n_epoch= 1,
+            log_every_n_steps=10,)
+
+        torch.set_float32_matmul_precision("medium")
+        trainer = pl.Trainer(**trainer_config,)
+        trainer.fit(model, train_dataloader, valid_dataloader)
     
     # def chunk_batch(batch, start_idx, end_idx):
     #     output = {k:batch[k] for k in ['node_opcode', 'node_feat', 'edge_index']}

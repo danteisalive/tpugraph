@@ -179,7 +179,7 @@ class TPULayoutDataset(torch.utils.data.Dataset):
     def _process(self, idx : int):
 
         if os.path.exists(self.processed_paths + self.df.model_name[idx] + ".pt"):
-            print(f"{self.processed_paths + self.df.model_name[idx]}.pt already exists!")
+            # print(f"{self.processed_paths + self.df.model_name[idx]}.pt already exists!")
             return torch.load(self.processed_paths + self.df.model_name[idx] + ".pt")
         else:
             raise RuntimeError("Please preprocess the dataset! \
@@ -393,21 +393,23 @@ class LayoutCollator:
         batch_list = []
         for graph in batch:
 
-            original_num_nodes = graph['node_opcode'].shape[0]
-            amount_of_padding = 0 if original_num_nodes % self.segment_size == 0 else self.segment_size - original_num_nodes % self.segment_size
-            node_opcode = F.pad(graph['node_opcode'], (0, amount_of_padding), value=self.PADDING_VALUE).long()
+            # original_num_nodes = graph['node_opcode'].shape[0]
+            # amount_of_padding = 0 if original_num_nodes % self.segment_size == 0 else self.segment_size - original_num_nodes % self.segment_size
+            # node_opcode = F.pad(graph['node_opcode'], (0, amount_of_padding), value=self.PADDING_VALUE).long()
+            node_opcode = graph['node_opcode'].long()
 
-            node_feat = F.pad(graph['node_feat'], (0,0, 0, amount_of_padding), value=self.PADDING_VALUE)
+            # node_feat = F.pad(graph['node_feat'], (0,0, 0, amount_of_padding), value=self.PADDING_VALUE)
+            node_feat = graph['node_feat']
             
             edge_index   = graph['edge_index'].T
             
             num_nodes = node_opcode.shape[0]
-            assert num_nodes % self.segment_size == 0, ""
+            # assert num_nodes % self.segment_size == 0, ""
             node_config_ids = graph['node_config_ids'].long()
             node_config_feat = graph['node_config_feat']
             node_config_feat = self._transform_node_config_features(node_config_feat, node_config_ids, num_nodes)  # (num_selected_configs, num_nodes, CONFIG_FEAT)
             
-            assert node_config_feat.shape[2] == self.CONFIG_FEATS, ""
+            assert node_config_feat.shape[2] == self.CONFIG_FEATS, "node_config_feat.shape[2] != self.CONFIG_FEATS"
             node_config_feat = node_config_feat.view(-1, self.CONFIG_FEATS) # (num_selected_configs * num_nodes, CONFIG_FEAT)
 
 
