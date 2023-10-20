@@ -31,15 +31,13 @@ from torch.utils.data import  DataLoader, Subset
 from torch_geometric.data import Batch
 from torch.nn import functional as F
 from graphgps.logger import create_logger
-import torch.nn as nn
 import pytorch_lightning as pl
-from tqdm import tqdm
-import numpy as np
-import pandas as pd
 
 from graphgps.network.tpu_layout_model import get_model
 
 from sklearn.model_selection import KFold
+
+NUM_CPUS = os.cpu_count() 
 
 def new_optimizer_config(cfg):
     return OptimizerConfig(optimizer=cfg.optim.optimizer,
@@ -107,14 +105,14 @@ class KFoldDataModule(pl.LightningDataModule):
         return DataLoader(Subset(self.dataset, self.train_indices), 
                           batch_size=self.batch_size, 
                           shuffle=True,
-                          num_workers=1,
+                          num_workers=NUM_CPUS//2,
                           collate_fn=LayoutCollator(),
                           )
 
     def val_dataloader(self):
         return DataLoader(Subset(self.dataset, self.val_indices), 
                           batch_size=self.batch_size,
-                          num_workers=1,
+                          num_workers=NUM_CPUS//2,
                           collate_fn=LayoutCollator(),
                           )
 
@@ -133,27 +131,17 @@ if __name__ == '__main__':
     if enable_cross_validation:
 
         dataset = TPULayoutDataset(data_dir="/home/cc/data/tpugraphs/npz", split_names=['train', 'valid'], search='random', source='xla',)
-        model = get_model(cfg=cfg)
-        
+        model = get_model(cfg=cfg)        
+        logger = pl.loggers.CSVLogger("logs", name="tpu_layout_gnn")
         # Assume dataset is your torch.utils.data.Dataset
         kf = KFold(n_splits=5, shuffle=True, random_state=42)
         for fold, (train_indices, val_indices) in enumerate(kf.split(dataset)):
             print(f"Training fold {fold + 1}")
 
             datamodule = KFoldDataModule(dataset, train_indices, val_indices, cfg.train.batch_size)
-            
-            trainer_config = dict(
-                max_epochs=5,
-                precision=32,
-                gradient_clip_val= 1.0,
-                accumulate_grad_batches=1,
-                check_val_every_n_epoch=5,
-                log_every_n_steps=1,)
-
-            torch.set_float32_matmul_precision("medium")
-            trainer = pl.Trainer(**trainer_config,)
-
+            trainer = pl.Trainer(max_epochs=20,logger=logger,)
             trainer.fit(model, datamodule)
+
 
     else:
         
