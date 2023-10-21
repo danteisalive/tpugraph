@@ -126,11 +126,11 @@ if __name__ == '__main__':
     dump_cfg(cfg)
     
     loggers = create_logger()
-    enable_cross_validation = True
+    enable_cross_validation = False
 
     if enable_cross_validation:
 
-        dataset = TPULayoutDataset(data_dir="/home/cc/data/tpugraphs/npz", split_names=['train', 'valid'], search='random', source='xla',)
+        dataset = TPULayoutDataset(data_dir="/home/cc/data/tpugraphs/npz", num_configs=32, split_names=['train', 'valid'], search='random', source='xla',)
         model = get_model(cfg=cfg)        
         logger = pl.loggers.CSVLogger("logs", name="tpu_layout_gnn")
         # Assume dataset is your torch.utils.data.Dataset
@@ -151,8 +151,8 @@ if __name__ == '__main__':
         valid_dataloader = DataLoader(valid_dataset, collate_fn=LayoutCollator(), num_workers=1, batch_size=cfg.train.batch_size)
 
         model = get_model(cfg=cfg)
-
-        # print(model)
+        logger = pl.loggers.CSVLogger("logs", name="tpu_layout_gnn")
+        
         logging.info(model)
         logging.info(cfg)
         
@@ -163,7 +163,8 @@ if __name__ == '__main__':
             gradient_clip_val= 1.0,
             accumulate_grad_batches= 1,
             check_val_every_n_epoch= 1,
-            log_every_n_steps=10,)
+            log_every_n_steps=10,
+            logger=logger,)
 
         torch.set_float32_matmul_precision("medium")
         trainer = pl.Trainer(**trainer_config,)

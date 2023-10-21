@@ -98,56 +98,6 @@ class KendallTau(tm.Metric):
 
     def compute(self) -> torch.Tensor:
         return torch.cat(self.runtimes).mean()
-    
-# class KendallTau(tm.Metric):
-    
-#     higher_is_better = True
-    
-#     def __init__(self, eps:float=1e-6, **kwargs: Any) -> None:
-#         super().__init__(**kwargs)
-#         self.add_state("concordant", default=[], dist_reduce_fx=None)
-#         self.add_state("discordant", default=[], dist_reduce_fx=None)
-#         self.eps = eps
-
-        
-#     def _calculate_concordant_discordant(self, 
-#                                          true_sequence : torch.Tensor, 
-#                                          pred_sequence : torch.Tensor
-#                                         ) -> Tuple[torch.Tensor, torch.Tensor]:
-#         """
-#         Calculate the number of concordant and discordant pairs
-#         Args:
-#             true_sequence: Tensor of shape (bs, seq_len) with the true sequence
-#             pred_sequence: Tensor of shape (bs, seq_len) with the predicted sequence
-#         Returns:
-#             concordant: Tensor of shape (bs,) with the number of concordant pairs
-#             discordant: Tensor of shape (bs,) with the number of discordant pairs
-#         """
-#         num_configs = true_sequence.shape[1]
-#         tril_mask = torch.ones((num_configs, num_configs), device=true_sequence.device).tril(diagonal=-1)
-#         true_diff = (true_sequence.unsqueeze(-1) - true_sequence.unsqueeze(1))
-#         pred_diff = pred_sequence.unsqueeze(-1) - pred_sequence.unsqueeze(1)
-#         concordant = ((true_diff * pred_diff > 0).float() * tril_mask).sum(dim=[1,2])
-#         discordant = ((true_diff * pred_diff < 0).float() * tril_mask).sum(dim=[1,2])
-#         return concordant, discordant
-    
-#     def update(self, 
-#                true_sequence:torch.Tensor, 
-#                pred_sequence:torch.Tensor
-#               ):
-#         concordant, discordant = self._calculate_concordant_discordant(true_sequence, pred_sequence)
-#         self.concordant.append(concordant)
-#         self.discordant.append(discordant)
-        
-#     def kendall_tau(self):
-#         concordant = torch.cat(self.concordant)
-#         discordant = torch.cat(self.discordant)
-#         kendall_tau = (concordant - discordant) / (concordant + discordant + self.eps)
-#         return kendall_tau
-        
-#     def compute(self) -> torch.Tensor:
-#         kendall_tau = self.kendall_tau()
-#         return kendall_tau.mean()
 
     
 class NodeEncoder(nn.Module):
@@ -177,7 +127,7 @@ class NodeEncoder(nn.Module):
         self.layer_norm_eps = layer_norm_eps
 
         self.op_weights = nn.Parameter(torch.ones(1,1,requires_grad=True) * 100)
-        self.config_weights = nn.Parameter(torch.ones(1,18,requires_grad=True) * 100)
+        self.config_weights = nn.Parameter(torch.ones(1, self.CONFIG_FEATS, requires_grad=True) * 100)
 
         # layers for node op code and features
         self.node_opcode_embeddings = nn.Embedding(self.NODE_OP_CODES+2 , self.embedding_size, padding_idx=self.NODE_OP_CODES+1) # We have 122 opcodes (121 from dataset (0 tp 120) + 1 dummy opcode for padding)
@@ -195,11 +145,10 @@ class NodeEncoder(nn.Module):
             node_feat : torch.Tensor,   # (num_nodes, NODE_FEATS(140))
             node_config_feat : torch.Tensor, # (num_configs, num_nodes, CONFIG_FEATS(18))
         """
-        # print(batch.node_opcode.shape)
-        # node_opcode = batch.node_opcode * self.op_weights
-        opcode_embeddings = self.node_opcode_embeddings(batch.node_opcode)  # (num_nodes, embedding_size)
-        # print(opcode_embeddings.shape)
 
+        opcode_embeddings = self.node_opcode_embeddings(batch.node_opcode)  # (num_nodes, embedding_size)
+        opcode_embeddings = opcode_embeddings * self.op_weights
+        
         # print(batch.x.shape)
         nodes_feats_embeddings =  self.linear(batch.x) # (num_nodes, embedding_size)
         # print(nodes_feats_embeddings.shape)
