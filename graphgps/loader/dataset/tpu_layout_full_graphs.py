@@ -110,7 +110,7 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
 
         layout_dict['node_config_feat'] = layout_dict['node_config_feat'][selected_configs]
 
-        # layout_dict['config_runtime'] = F.normalize(layout_dict['config_runtime'], dim = -1)
+        layout_dict['config_runtime'] = F.normalize(layout_dict['config_runtime'].to(dtype=torch.float32), dim = -1)
         layout_dict['config_runtime'] = layout_dict['config_runtime'][selected_configs] 
         layout_dict['selected_configs'] = torch.from_numpy(selected_configs)
 
