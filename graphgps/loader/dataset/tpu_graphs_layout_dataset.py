@@ -13,7 +13,8 @@ from torch.nn import functional as F
 from torch_geometric.data.data import Data
 from torch_geometric.data import Batch
 from torch.utils.data import  DataLoader
-
+import metis
+from itertools import islice
 class TPULayoutDataset(torch.utils.data.Dataset):
 
     NODE_OP_CODES = 120
@@ -141,39 +142,61 @@ class TPULayoutDataset(torch.utils.data.Dataset):
                                            graph : nx.DiGraph, 
                                            configurable_nodes : List,
                                            ):
-        
         # Create an empty directed graph to store the result
         minimal_graph = nx.DiGraph()
 
         # Find terminal nodes (sink nodes)
         terminal_nodes = [node for node, out_degree in graph.out_degree() if out_degree == 0]
 
-        # print(f"{configurable_nodes=}")
-        # print(f"{terminal_nodes=}")
-        
+        print(f"{configurable_nodes=}")
+        print(f"{terminal_nodes=}")
+
+        # create line graph
+        H = nx.line_graph(graph)
+        new_edges = []
+        # add source and sink nodes
+        for (u,v) in H.nodes():
+            if u==configurable_nodes[0]:
+                new_edges.append(("source",(u,v)))
+            if v==terminal_nodes[0]:
+                new_edges.append(((u,v),"sink"))
+        H.add_edges_from(new_edges)
+
+        # 9 shortest paths
+        print(list(islice(nx.shortest_simple_paths(H, source="source", target="sink"), 20)))
+        # print(len(list(nx.shortest_simple_paths(H, source="source", target="sink"))))
+
+        assert(0)
         # first find all the shortest path from confgiruable nodes to terminal nodes
         for i in range(len(configurable_nodes)):
             for j in range(len(terminal_nodes)):
-                if nx.has_path(graph, configurable_nodes[i], terminal_nodes[j]):
-                    path = nx.shortest_path(graph, configurable_nodes[i], terminal_nodes[j])
-                    assert len(path) > 1, f"Path size should be greater than one! {path=}, {configurable_nodes[i]=}, {terminal_nodes[j]=}"
-                    # Add the path to the result graph
-                    for k in range(len(path) - 1):
-                        minimal_graph.add_edge(path[k], path[k+1])
+                # Find all simple paths between the source and target
+                print(f"Find paths between {configurable_nodes[i]} and {terminal_nodes[j]}")
+                paths = list(nx.all_simple_paths(graph, source=configurable_nodes[i], target=terminal_nodes[j]))
+                for path in paths:
+                    print(path)
+                # if nx.has_path(graph, configurable_nodes[i], terminal_nodes[j]):
+                #     path = nx.shortest_path(graph, configurable_nodes[i], terminal_nodes[j])
+                #     assert len(path) > 1, f"Path size should be greater than one! {path=}, {configurable_nodes[i]=}, {terminal_nodes[j]=}"
+                #     # print(path)
+                #     # Add the path to the result graph
+                #     for k in range(len(path) - 1):
+                #         minimal_graph.add_edge(path[k], path[k+1])
         
         assert set(configurable_nodes).issubset(minimal_graph.nodes()), "Can't find all the configurable nodes!"
 
         
-        # For each pair of nodes in M, compute the shortest path
-        for i in range(len(configurable_nodes)):
-            for j in range(i+1, len(configurable_nodes)):
-                if nx.has_path(graph, configurable_nodes[i], configurable_nodes[j]):
-                    path = nx.shortest_path(graph, configurable_nodes[i], configurable_nodes[j])
-                    assert len(path) > 1, f"Path size should be greater than one! {len(path)}"
-                    # Add the path to the result graph
-                    for k in range(len(path) - 1):
-                        minimal_graph.add_edge(path[k], path[k+1])
+        # # For each pair of nodes in M, compute the shortest path
+        # for i in range(len(configurable_nodes)):
+        #     for j in range(i+1, len(configurable_nodes)):
+        #         if nx.has_path(graph, configurable_nodes[i], configurable_nodes[j]):
+        #             path = nx.shortest_path(graph, configurable_nodes[i], configurable_nodes[j])
+        #             assert len(path) > 1, f"Path size should be greater than one! {len(path)}"
+        #             # Add the path to the result graph
+        #             for k in range(len(path) - 1):
+        #                 minimal_graph.add_edge(path[k], path[k+1])
         
+        assert(0)
         return minimal_graph
 
     def _process(self, idx : int):
@@ -205,14 +228,12 @@ class TPULayoutDataset(torch.utils.data.Dataset):
         if "edge_index" not in layout_dict:
             raise ValueError(f"Can't find edge_index in the dataset!")
             
-        edge_index = layout_dict['edge_index'][:, ::-1]
         configurable_nodes = np.sort(layout_dict['node_config_ids'])
 
-
         # get the original DiGraph
-        graph = self._get_digraph(edge_index)
-
-        # print("weakly_connected_components: ", len(list(nx.weakly_connected_components(graph))))
+        graph = self._get_digraph(layout_dict['edge_index'][:, ::-1])
+        print("node_splits: ", layout_dict['node_splits'])
+        print("edge indexes: ", list(map(tuple, layout_dict['edge_index'][:, ::-1])))
         # find the smallest subgraph that includes all the configurable nodes
         smallest_graph = self._smallest_subgraph_containing_nodes(graph=graph, 
                                                                   configurable_nodes=configurable_nodes,
@@ -454,6 +475,7 @@ class LayoutCollator:
 
 if __name__ == '__main__':
     dataset = TPULayoutDataset(data_dir="/home/cc/data/tpugraphs/npz", split_names=['train', 'valid'], search='random', source='xla',)
-    dataset.preprocess()
+    # dataset.preprocess()
+    dataset._process(0)
     # train_dataloader = DataLoader(dataset, collate_fn=LayoutCollator(), num_workers=1, batch_size=2, shuffle=True)
     # import pdb; pdb.set_trace()
