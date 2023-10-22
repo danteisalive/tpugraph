@@ -1,20 +1,13 @@
-import datetime
 import os
 import torch
 import logging
 
-import graphgps  # noqa, register custom modules
-from graphgps.optimizer.extra_optimizers import ExtendedSchedulerConfig
 
 from torch_geometric.graphgym.cmd_args import parse_args
 from torch_geometric.graphgym.config import (cfg, dump_cfg,
                                              set_cfg, load_cfg,
                                              makedirs_rm_exist)
-from torch_geometric.graphgym.loader import create_loader
-from torch_geometric.graphgym.logger import set_printing
-from torch_geometric.graphgym.optim import create_optimizer, \
-    create_scheduler, OptimizerConfig
-from torch_geometric.graphgym.model_builder import create_model
+
 from torch_geometric.graphgym.train import train
 from torch_geometric.graphgym.utils.agg_runs import agg_runs
 from torch_geometric.graphgym.utils.comp_budget import params_count
@@ -26,37 +19,20 @@ from torch_geometric import seed_everything
 
 
 
-from graphgps.loader.dataset.tpu_graphs_layout_dataset import (TPULayoutDataset, LayoutCollator)
+from loaders.tpu_graphs_layout_dataset import (TPULayoutDataset, LayoutCollator)
 from torch.utils.data import  DataLoader, Subset
-from torch_geometric.data import Batch
 from torch.nn import functional as F
-from graphgps.logger import create_logger
 import pytorch_lightning as pl
 
-from graphgps.network.tpu_layout_model import get_model
+from network.tpu_layout_model import get_model
 
 from sklearn.model_selection import KFold
 
 NUM_CPUS = os.cpu_count() 
 
-def new_optimizer_config(cfg):
-    return OptimizerConfig(optimizer=cfg.optim.optimizer,
-                           base_lr=cfg.optim.base_lr,
-                           weight_decay=cfg.optim.weight_decay,
-                           momentum=cfg.optim.momentum)
 
 
-def new_scheduler_config(cfg):
-    return ExtendedSchedulerConfig(
-        scheduler=cfg.optim.scheduler,
-        steps=cfg.optim.steps, lr_decay=cfg.optim.lr_decay,
-        max_epoch=cfg.optim.max_epoch, reduce_factor=cfg.optim.reduce_factor,
-        schedule_patience=cfg.optim.schedule_patience, min_lr=cfg.optim.min_lr,
-        num_warmup_epochs=cfg.optim.num_warmup_epochs,
-        train_mode=cfg.train.mode, eval_period=cfg.train.eval_period)
-
-
-def custom_set_out_dir(cfg, cfg_fname, name_tag):
+def custom_set_out_dir(cfg, cfg_fname, name_tag=None):
     """Set custom main output directory path to cfg.
     Include the config filename and name_tag in the new :obj:`cfg.out_dir`.
 
@@ -71,19 +47,7 @@ def custom_set_out_dir(cfg, cfg_fname, name_tag):
     cfg.out_dir = os.path.join(cfg.out_dir, run_name)
 
 
-def custom_set_run_dir(cfg, run_id):
-    """Custom output directory naming for each experiment run.
 
-    Args:
-        cfg (CfgNode): Configuration node
-        run_id (int): Main for-loop iter id (the random seed or dataset split)
-    """
-    cfg.run_dir = os.path.join(cfg.out_dir, str(run_id))
-    # Make output directory
-    if cfg.train.auto_resume:
-        os.makedirs(cfg.run_dir, exist_ok=True)
-    else:
-        makedirs_rm_exist(cfg.run_dir)
 
 
 class KFoldDataModule(pl.LightningDataModule):
@@ -122,10 +86,9 @@ if __name__ == '__main__':
     # Load config file
     set_cfg(cfg)
     load_cfg(cfg, args)
-    custom_set_out_dir(cfg, args.cfg_file, cfg.name_tag)
+    custom_set_out_dir(cfg, args.cfg_file,)
     dump_cfg(cfg)
     
-    loggers = create_logger()
     enable_cross_validation = False
 
     if enable_cross_validation:
@@ -163,8 +126,8 @@ if __name__ == '__main__':
                                          source='xla', 
                                          processed_paths="/home/cc/tpugraph/datasets/TPUGraphs/processed_SP_TP"
                                          )
-        train_dataloader = DataLoader(train_dataset, collate_fn=LayoutCollator(), num_workers=1, batch_size=cfg.train.batch_size, shuffle=True)
-        valid_dataloader = DataLoader(valid_dataset, collate_fn=LayoutCollator(), num_workers=1, batch_size=cfg.train.batch_size)
+        train_dataloader = DataLoader(train_dataset, collate_fn=LayoutCollator(), num_workers=NUM_CPUS, batch_size=cfg.train.batch_size, shuffle=True)
+        valid_dataloader = DataLoader(valid_dataset, collate_fn=LayoutCollator(), num_workers=NUM_CPUS, batch_size=cfg.train.batch_size)
 
         model = get_model(cfg=cfg)
         logger = pl.loggers.CSVLogger("logs", name="tpu_layout_gnn")

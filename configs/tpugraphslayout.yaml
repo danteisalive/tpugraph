@@ -6,7 +6,6 @@ dataset:
   task_type: ranking
   transductive: False
 train:
-  mode: custom_tpu
   batch_size: 4
   eval_period: 1
   ckpt_period: 100
@@ -34,6 +33,4 @@ optim:
   max_epoch: 100
 share:
   dim_in: 128
-  num_sample_config: 16
-device: cuda
 accelerator : cuda

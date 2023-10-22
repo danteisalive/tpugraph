@@ -5,8 +5,6 @@ from torch_geometric.graphgym.config import cfg
 from torch_geometric.graphgym.models.gnn import FeatureEncoder, GNNPreMP
 from torch_geometric.graphgym.register import register_network
 from torch_geometric.graphgym.models.layer import SAGEConv, new_layer_config
-from graphgps.layer.gatedgcn_layer import GatedGCNLayer
-from graphgps.layer.gine_conv_layer import GINEConvLayer
 import pytorch_lightning as pl
 from torch_geometric.data import Data
 from torch_geometric.data import Batch
@@ -14,12 +12,9 @@ from torch import nn
 import torchmetrics as tm
 from torch_sparse import SparseTensor
 
-from typing import Optional
 from torchmetrics.regression import KendallRankCorrCoef
 
 
-from typing import Any, Tuple
-import numpy as np
 
 class MultiElementRankLoss(nn.Module):
     """
@@ -195,7 +190,7 @@ class TPULayoutModel(nn.Module):
 
         self.embedding_size = cfg.share.dim_in
         self.dim_out=1
-        self.num_sample_config = cfg.share.num_sample_config
+        self.num_sample_config = 32
         self.node_encoder = NodeEncoder(embedding_size=self.embedding_size)
 
 
@@ -406,7 +401,7 @@ def get_model(cfg):
 
     model = TPULayoutModel(cfg)
     model = LightningWrapper(model)
-    model.to(torch.device(cfg.device))
+    model.to(torch.device(cfg.accelerator))
 
     return model
 

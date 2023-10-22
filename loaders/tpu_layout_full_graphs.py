@@ -145,7 +145,8 @@ class LayoutCollator:
     (num_configs, number_of_configurable_nodes, CONFIG_FEAT) and converts it into 
     (num_configs, num_nodes, CONFIG_FEAT) using the `node_config_ids`
     Inputs: 
-    node_config_feat = tensor([[[ 0.4851,  1.7761],
+    node_config_feat = tensor([
+            [[ 0.4851,  1.7761],
             [ 0.7147,  1.3434]],
 
             [[ 1.7586, -0.7400],
