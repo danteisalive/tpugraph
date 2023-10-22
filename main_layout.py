@@ -130,7 +130,13 @@ if __name__ == '__main__':
 
     if enable_cross_validation:
 
-        dataset = TPULayoutDataset(data_dir="/home/cc/data/tpugraphs/npz", num_configs=32, split_names=['train', 'valid'], search='random', source='xla',)
+        dataset = TPULayoutDataset(data_dir="/home/cc/data/tpugraphs/npz", 
+                                   num_configs=32, 
+                                   split_names=['train', 'valid'], 
+                                   search='random', 
+                                   source='xla',
+                                   processed_paths="/home/cc/tpugraph/datasets/TPUGraphs/processed_SP_TP"
+                                   )
         model = get_model(cfg=cfg)        
         logger = pl.loggers.CSVLogger("logs", name="tpu_layout_gnn")
         # Assume dataset is your torch.utils.data.Dataset
@@ -145,8 +151,18 @@ if __name__ == '__main__':
 
     else:
         
-        train_dataset = TPULayoutDataset(data_dir="/home/cc/data/tpugraphs/npz", split_names=['train'], search='random', source='xla',)
-        valid_dataset = TPULayoutDataset(data_dir="/home/cc/data/tpugraphs/npz", split_names=['valid'], search='random', source='xla',)
+        train_dataset = TPULayoutDataset(data_dir="/home/cc/data/tpugraphs/npz", 
+                                         split_names=['train'], 
+                                         search='random', 
+                                         source='xla', 
+                                         processed_paths="/home/cc/tpugraph/datasets/TPUGraphs/processed_SP_TP"
+                                         )
+        valid_dataset = TPULayoutDataset(data_dir="/home/cc/data/tpugraphs/npz", 
+                                         split_names=['valid'], 
+                                         search='random', 
+                                         source='xla', 
+                                         processed_paths="/home/cc/tpugraph/datasets/TPUGraphs/processed_SP_TP"
+                                         )
         train_dataloader = DataLoader(train_dataset, collate_fn=LayoutCollator(), num_workers=1, batch_size=cfg.train.batch_size, shuffle=True)
         valid_dataloader = DataLoader(valid_dataset, collate_fn=LayoutCollator(), num_workers=1, batch_size=cfg.train.batch_size)
 
