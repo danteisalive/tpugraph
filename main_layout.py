@@ -1,21 +1,12 @@
 import os
 import torch
 import logging
-
+print(torch.__version__)
 
 from torch_geometric.graphgym.cmd_args import parse_args
 from torch_geometric.graphgym.config import (cfg, dump_cfg,
                                              set_cfg, load_cfg,
                                              makedirs_rm_exist)
-
-from torch_geometric.graphgym.train import train
-from torch_geometric.graphgym.utils.agg_runs import agg_runs
-from torch_geometric.graphgym.utils.comp_budget import params_count
-from torch_geometric.graphgym.utils.device import auto_select_device
-from torch_geometric.graphgym.register import train_dict
-from torch_geometric import seed_everything
-
-
 
 
 
@@ -138,14 +129,10 @@ if __name__ == '__main__':
         pl.seed_everything(42)
         trainer_config = dict(
             max_epochs= 40,
-            precision= 32,
             gradient_clip_val= 1.0,
-            accumulate_grad_batches= 1,
-            check_val_every_n_epoch= 1,
-            log_every_n_steps=10,
             logger=logger,)
 
-        torch.set_float32_matmul_precision("medium")
+        # torch.set_float32_matmul_precision("medium")
         trainer = pl.Trainer(**trainer_config,)
         trainer.fit(model, train_dataloader, valid_dataloader)
     

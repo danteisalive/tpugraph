@@ -13,7 +13,6 @@ from torch.nn import functional as F
 from torch_geometric.data.data import Data
 from torch_geometric.data import Batch
 from torch.utils.data import  DataLoader
-import metis
 from itertools import islice
 class TPULayoutDataset(torch.utils.data.Dataset):
 
