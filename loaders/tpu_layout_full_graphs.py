@@ -200,50 +200,52 @@ class LayoutCollator:
         """    
 
         assert len(batch) == 1, "len(batch) != 1"
+        graph = batch[0]
 
-        batch_list = []
-        for graph in batch:
-
-            node_opcode = graph['node_opcode'].long()
+        node_opcode = graph['node_opcode'].long()
             
-            node_feat = graph['node_feat']
+        node_feat = graph['node_feat']
 
-            edge_index = graph['edge_index'].flip(dims=[1]).T
+        edge_index = graph['edge_index'].flip(dims=[1]).T
             
-            num_nodes = node_opcode.shape[0]
+        num_nodes = node_opcode.shape[0]
 
-            node_config_ids = graph['node_config_ids'].long()
+        node_config_ids = graph['node_config_ids'].long()
 
-            node_config_feat = graph['node_config_feat']
-            node_config_feat = self._transform_node_config_features(node_config_feat, node_config_ids, num_nodes)  # (num_selected_configs, num_nodes, CONFIG_FEAT)            
-            node_config_feat = node_config_feat.view(-1, self.CONFIG_FEATS) # (num_selected_configs * num_nodes, CONFIG_FEAT)
+        train_mask = torch.zeros((num_nodes,), dtype=torch.bool)
+        train_mask[node_config_ids] = True
 
-            # there will be padding if number of sample config runtimes are different
-            if self.targets:
-                config_runtime = graph['config_runtime']
-                selected_configs = graph['selected_configs']
-                data = Data(edge_index=edge_index.contiguous(),              # (2, UNK)
+        node_config_feat = graph['node_config_feat']
+        node_config_feat = self._transform_node_config_features(node_config_feat, node_config_ids, num_nodes)  # (num_selected_configs, num_nodes, CONFIG_FEAT)            
+        node_config_feat = node_config_feat.view(-1, self.CONFIG_FEATS) # (num_selected_configs * num_nodes, CONFIG_FEAT)
+
+        # there will be padding if number of sample config runtimes are different
+        if self.targets:
+            config_runtime = graph['config_runtime']
+            selected_configs = graph['selected_configs']
+            data = Data(edge_index=edge_index.contiguous(),              # (2, UNK)
                             x=node_feat.contiguous(),                        # (num_nodes, NODE_OP_CODES)
-                            # node_opcode=node_opcode.contiguous(),            # (num_nodes, )
+                            node_opcode=node_opcode.contiguous(),            # (num_nodes, )
                             # node_config_feat=node_config_feat.contiguous(),  # (num_configs * num_nodes, CONFIG_FEAT, )
                             # y=config_runtime.contiguous(),                   # (num_configs,)
                             # selected_configs=selected_configs.contiguous(),  # (num_configs,)
+                            train_mask=train_mask,
+                            node_config_ids=node_config_ids,
                         )
-                print(f"{edge_index.shape=}, {edge_index.dtype=}, {node_feat.shape=}, {node_feat.dtype=}, {node_opcode.shape=}, {node_opcode.dtype=}, {node_config_feat.shape=}, {node_config_feat.dtype=}, {config_runtime.shape=}, {config_runtime.dtype=}")
+            print(f"{edge_index.shape=}, {edge_index.dtype=}, {node_feat.shape=}, {node_feat.dtype=}, {node_opcode.shape=}, {node_opcode.dtype=}, {node_config_feat.shape=}, {node_config_feat.dtype=}, {config_runtime.shape=}, {config_runtime.dtype=}")
                 
-            else:
+        else:
 
-                data = Data(edge_index=edge_index,              # (2, UNK)
-                            x=node_feat,                        # (num_nodes, NODE_OP_CODES)
+            data = Data(edge_index=edge_index.contiguous(),              # (2, UNK)
+                            x=node_feat.contiguous(),                        # (num_nodes, NODE_OP_CODES)
                             node_opcode=node_opcode,            # (num_nodes, )
                             node_config_feat=node_config_feat,  # (num_configs * num_nodes, CONFIG_FEAT, )
                         )
             
-            data.validate(raise_on_error=True)
-            batch_list.append(data)
+        data.validate(raise_on_error=True)
 
         
-        return batch_list[0]
+        return data
 
 
 
@@ -257,17 +259,14 @@ if __name__ == '__main__':
     dataloader = DataLoader(dataset, collate_fn=LayoutCollator(), num_workers=1, batch_size=1, shuffle=True)
     data = dataset[0]
     print("sampled_data:")
-    # print(data.edge_index)
-    # for idx in [0, 1, 2, 3, 4, 2048, 2049, 2050, 2051, 2052]:
-    #     print(idx, data.x[idx, :])
-
+    print("sampled_data:", data.node_config_ids)
     loader = NeighborLoader(
         data,
         # Sample 30 neighbors for each node for 2 iterations
-        num_neighbors=[30] * 2,
+        num_neighbors=[-1] * 3,
         # Use a batch size of 128 for sampling training nodes
-        batch_size=512,
-        # input_nodes=dataset[0].train_mask,L
+        batch_size=2048,
+        input_nodes=data.train_mask,
     )
 
     print("-------------------------------------------")
@@ -277,14 +276,14 @@ if __name__ == '__main__':
         for idx in range(batch.n_id.shape[0]):
             assert torch.equal(batch.x[idx, :], data.x[batch.n_id[idx], :]), ""
             
-        # print("batch.e_id:", batch.e_id)
-        # print("batch.n_id:", batch.n_id)
-        # print("data edges:")
+        print("batch.n_id:", batch.n_id)
+        # print("data op codes:")
         # for idx in range(5):
-        #     print()
-        # print("batch edges:")
-        # for idx in range(5):
-        #     print()
+        #     print(data.node_opcode[idx])
+
+        # print("batch op codes:")
+        for idx in range(batch.n_id.shape[0]):
+            assert torch.equal(batch.node_opcode[idx], data.node_opcode[batch.n_id[idx]]), ""
 
         for idx in range(batch.e_id.shape[0]):
             assert torch.equal(batch.n_id[batch.edge_index.T[idx,:]], data.edge_index.T[batch.e_id[idx], :]), ""
@@ -295,13 +294,11 @@ if __name__ == '__main__':
 
 
     # data_kc = KarateClub()
-    # # print(f"{data_kc.data}=")
+    # print(f"{data_kc.data}=")
     # # print(f"{data_kc.data.x}=")
-    # for idx in [0, 1, 2, 3, 4, 30, 31, 32, 33]:
-    #     print(idx, data_kc.x[idx, :])
     # # print(f"{data_kc.data.edge_index}=")
     # # print(f"{data_kc.data.y}=")
-    # # print(f"{data_kc.data.train_mask}=")
+    # print(f"{data_kc.data.train_mask}=")
     # # print(f"{data_kc.data.edge_index}=")
     
     # print("-------------------------------------------")
@@ -310,6 +307,4 @@ if __name__ == '__main__':
     # for batch in loader_f:
     #     print(batch)
     #     print(batch.n_id)
-    #     for idx in [0, 1, 2, 3, 4, 30, 31, 32, 33]:
-    #         print(batch.n_id[idx], data_kc.x[idx, :])
     #     print("-------------------------------------------")
