@@ -14,6 +14,9 @@ from torch_geometric.data.data import Data
 from torch_geometric.data import Batch
 from torch.utils.data import  DataLoader
 import torch.nn.functional as F
+from torch_geometric.loader import NeighborLoader
+import torch_geometric as pyg
+from torch_geometric.datasets import KarateClub
 
 class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
 
@@ -47,7 +50,6 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
                  source : str,
                  num_configs : int = 32, 
                  max_configs : Optional[int] = None,
-                 processed_paths : str = '/home/cc/tpugraph/datasets/TPUGraphs/processed',
                 ):
         
         self.num_configs = num_configs
@@ -57,7 +59,6 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
         self.source = source
         self.data_dir = data_dir
 
-        self.processed_paths = processed_paths + f"/layout/{self.source}/{self.search}/"
 
         df = self._generate_layout_df()
 
@@ -65,11 +66,9 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
         query = query + f" & (configuration == '{self.search}') & (extra == '{self.source}')"
         self.df = df.query(query).reset_index(drop=True)
         
-        os.makedirs(self.processed_paths, exist_ok = True) 
-
         print(f"Dataset has {self.split_names} samples and in total has {self.__len__()} graphs")
 
-    
+        self.collate = LayoutCollator()
     
     @property
     def num_sample_config(self) -> int:
@@ -124,7 +123,7 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
             assert (runtime == 0).any().item() is False, "Loader Error: one emelent is 0!"
 
 
-        return layout_dict
+        return self.collate([layout_dict])
     
 @dataclass
 class LayoutCollator:
@@ -200,6 +199,7 @@ class LayoutCollator:
         node_splits      | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (1, 2)
         """    
 
+        assert len(batch) == 1, "len(batch) != 1"
 
         batch_list = []
         for graph in batch:
@@ -222,15 +222,15 @@ class LayoutCollator:
             if self.targets:
                 config_runtime = graph['config_runtime']
                 selected_configs = graph['selected_configs']
-                data = Data(edge_index=edge_index,              # (2, UNK)
-                            x=node_feat,                        # (num_nodes, NODE_OP_CODES)
-                            node_opcode=node_opcode,            # (num_nodes, )
-                            node_config_feat=node_config_feat,  # (num_configs * num_nodes, CONFIG_FEAT, )
-                            y=config_runtime,                   # (num_configs,)
-                            selected_configs=selected_configs,  # (num_configs,)
+                data = Data(edge_index=edge_index.contiguous(),              # (2, UNK)
+                            x=node_feat.contiguous(),                        # (num_nodes, NODE_OP_CODES)
+                            # node_opcode=node_opcode.contiguous(),            # (num_nodes, )
+                            # node_config_feat=node_config_feat.contiguous(),  # (num_configs * num_nodes, CONFIG_FEAT, )
+                            # y=config_runtime.contiguous(),                   # (num_configs,)
+                            # selected_configs=selected_configs.contiguous(),  # (num_configs,)
                         )
                 print(f"{edge_index.shape=}, {edge_index.dtype=}, {node_feat.shape=}, {node_feat.dtype=}, {node_opcode.shape=}, {node_opcode.dtype=}, {node_config_feat.shape=}, {node_config_feat.dtype=}, {config_runtime.shape=}, {config_runtime.dtype=}")
-
+                
             else:
 
                 data = Data(edge_index=edge_index,              # (2, UNK)
@@ -242,8 +242,8 @@ class LayoutCollator:
             data.validate(raise_on_error=True)
             batch_list.append(data)
 
-
-        return Batch.from_data_list(batch_list)
+        
+        return batch_list[0]
 
 
 
@@ -255,8 +255,61 @@ if __name__ == '__main__':
                                         source='xla',
                                         )
     dataloader = DataLoader(dataset, collate_fn=LayoutCollator(), num_workers=1, batch_size=1, shuffle=True)
+    data = dataset[0]
+    print("sampled_data:")
+    # print(data.edge_index)
+    # for idx in [0, 1, 2, 3, 4, 2048, 2049, 2050, 2051, 2052]:
+    #     print(idx, data.x[idx, :])
 
-    for batch in dataloader:
+    loader = NeighborLoader(
+        data,
+        # Sample 30 neighbors for each node for 2 iterations
+        num_neighbors=[30] * 2,
+        # Use a batch size of 128 for sampling training nodes
+        batch_size=512,
+        # input_nodes=dataset[0].train_mask,L
+    )
+
+    print("-------------------------------------------")
+    for batch in loader:
         print(batch)
-        
-    # import pdb; pdb.set_trace()
+        # check for node features equivalance 
+        for idx in range(batch.n_id.shape[0]):
+            assert torch.equal(batch.x[idx, :], data.x[batch.n_id[idx], :]), ""
+            
+        # print("batch.e_id:", batch.e_id)
+        # print("batch.n_id:", batch.n_id)
+        # print("data edges:")
+        # for idx in range(5):
+        #     print()
+        # print("batch edges:")
+        # for idx in range(5):
+        #     print()
+
+        for idx in range(batch.e_id.shape[0]):
+            assert torch.equal(batch.n_id[batch.edge_index.T[idx,:]], data.edge_index.T[batch.e_id[idx], :]), ""
+        print("-------------------------------------------")
+
+
+
+
+
+    # data_kc = KarateClub()
+    # # print(f"{data_kc.data}=")
+    # # print(f"{data_kc.data.x}=")
+    # for idx in [0, 1, 2, 3, 4, 30, 31, 32, 33]:
+    #     print(idx, data_kc.x[idx, :])
+    # # print(f"{data_kc.data.edge_index}=")
+    # # print(f"{data_kc.data.y}=")
+    # # print(f"{data_kc.data.train_mask}=")
+    # # print(f"{data_kc.data.edge_index}=")
+    
+    # print("-------------------------------------------")
+    # loader_f = pyg.loader.NeighborLoader(data_kc.data, num_neighbors=[-1, -1], batch_size=10, is_sorted=False, shuffle=False)
+
+    # for batch in loader_f:
+    #     print(batch)
+    #     print(batch.n_id)
+    #     for idx in [0, 1, 2, 3, 4, 30, 31, 32, 33]:
+    #         print(batch.n_id[idx], data_kc.x[idx, :])
+    #     print("-------------------------------------------")
