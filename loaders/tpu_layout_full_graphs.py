@@ -92,7 +92,6 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
         return  np.random.choice(total_configs, self.num_configs, replace=False)
     
     def __getitem__(self, idx:int, selected_configs:List[int]=None):
-        
         """
         node_feat        | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (1696, 140)
         node_opcode      | Type: <class 'numpy.ndarray'> | Dtype: uint8    | Shape (1696,)
@@ -122,8 +121,10 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
             assert (runtime == 0).all().item() is False, "Loader Error: all emelents are 0!"
             assert (runtime == 0).any().item() is False, "Loader Error: one emelent is 0!"
 
+        for k, v in layout_dict.items():
+            print(k,v.shape)
 
-        return self.collate([layout_dict])
+        return layout_dict
     
 @dataclass
 class LayoutCollator:
@@ -138,6 +139,16 @@ class LayoutCollator:
     def __init__(self,):
         pass
 
+    def _delete_data_attributes(self, 
+                               data : Data, 
+                               atts_to_delete: Optional[List[str]] = [],
+                               ):
+        
+        for attr_name in data.keys():
+            if not isinstance(data[attr_name], torch.Tensor) or \
+               attr_name in atts_to_delete:
+                delattr(data, attr_name)
+        return data
 
     """
     This function takes the layout `node_config_feat` tensor which has the shape of 
@@ -188,7 +199,6 @@ class LayoutCollator:
 
 
     def __call__(self, batch : List):
-
         """
         node_opcode      | Type: <class 'numpy.ndarray'> | Dtype: uint8    | Shape (1696,)
         node_feat        | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (1696, 140)
@@ -223,29 +233,64 @@ class LayoutCollator:
         if self.targets:
             config_runtime = graph['config_runtime']
             selected_configs = graph['selected_configs']
-            data = Data(edge_index=edge_index.contiguous(),              # (2, UNK)
+            data = Data(edge_index=edge_index.contiguous(),                  # (2, UNK)
                             x=node_feat.contiguous(),                        # (num_nodes, NODE_OP_CODES)
                             node_opcode=node_opcode.contiguous(),            # (num_nodes, )
                             # node_config_feat=node_config_feat.contiguous(),  # (num_configs * num_nodes, CONFIG_FEAT, )
                             # y=config_runtime.contiguous(),                   # (num_configs,)
                             # selected_configs=selected_configs.contiguous(),  # (num_configs,)
                             train_mask=train_mask,
-                            node_config_ids=node_config_ids,
+                            # node_config_ids=node_config_ids,
                         )
-            print(f"{edge_index.shape=}, {edge_index.dtype=}, {node_feat.shape=}, {node_feat.dtype=}, {node_opcode.shape=}, {node_opcode.dtype=}, {node_config_feat.shape=}, {node_config_feat.dtype=}, {config_runtime.shape=}, {config_runtime.dtype=}")
+            # print(f"{edge_index.shape=}, {edge_index.dtype=}, {node_feat.shape=}, {node_feat.dtype=}, {node_opcode.shape=}, {node_opcode.dtype=}, {node_config_feat.shape=}, {node_config_feat.dtype=}, {config_runtime.shape=}, {config_runtime.dtype=}")
                 
         else:
 
-            data = Data(edge_index=edge_index.contiguous(),              # (2, UNK)
+            data = Data(edge_index=edge_index.contiguous(),                  # (2, UNK)
                             x=node_feat.contiguous(),                        # (num_nodes, NODE_OP_CODES)
-                            node_opcode=node_opcode,            # (num_nodes, )
-                            node_config_feat=node_config_feat,  # (num_configs * num_nodes, CONFIG_FEAT, )
+                            node_opcode=node_opcode.contiguous(),            # (num_nodes, )
+                            train_mask=train_mask,
+                            # node_config_feat=node_config_feat,  # (num_configs * num_nodes, CONFIG_FEAT, )
                         )
             
         data.validate(raise_on_error=True)
-
+        assert data.is_directed(), ""
         
-        return data
+        # print("sampled_data:")
+        # print("sampled_data:", data.node_config_ids)
+        loader = NeighborLoader(
+            data,
+            num_neighbors=[-1] * 1, # Sample all neighbors for each node for 4 iterations
+            batch_size=512, # Use a batch size of ... for sampling training nodes
+            input_nodes=data.train_mask,
+            directed=True,
+        )
+
+        print("--------------------- Batch ----------------------")
+        batch_list = []
+        for batch in loader:
+
+            # verify node features equivalance 
+            for idx in range(batch.n_id.shape[0]):
+                assert torch.equal(batch.x[idx, :], data.x[batch.n_id[idx], :]), ""
+            
+            # verify nodes id    
+            for idx in range(batch.n_id.shape[0]):
+                assert torch.equal(batch.node_opcode[idx], data.node_opcode[batch.n_id[idx]]), ""
+
+            # verify edges
+            for idx in range(batch.e_id.shape[0]):
+                assert torch.equal(batch.n_id[batch.edge_index.T[idx,:]], data.edge_index.T[batch.e_id[idx], :]), ""
+
+            assert batch.is_directed(), ""
+            batch = self._delete_data_attributes(batch, ['train_mask', 'node_config_id', 'n_id', 'e_id', 'input_id'])
+
+            print(batch)
+
+            batch_list.append(batch)
+        
+
+        return Batch.from_data_list(batch_list)
 
 
 
@@ -257,54 +302,7 @@ if __name__ == '__main__':
                                         source='xla',
                                         )
     dataloader = DataLoader(dataset, collate_fn=LayoutCollator(), num_workers=1, batch_size=1, shuffle=True)
-    data = dataset[0]
-    print("sampled_data:")
-    print("sampled_data:", data.node_config_ids)
-    loader = NeighborLoader(
-        data,
-        # Sample 30 neighbors for each node for 2 iterations
-        num_neighbors=[-1] * 3,
-        # Use a batch size of 128 for sampling training nodes
-        batch_size=2048,
-        input_nodes=data.train_mask,
-    )
 
-    print("-------------------------------------------")
-    for batch in loader:
+    for batch in dataloader:
         print(batch)
-        # check for node features equivalance 
-        for idx in range(batch.n_id.shape[0]):
-            assert torch.equal(batch.x[idx, :], data.x[batch.n_id[idx], :]), ""
-            
-        print("batch.n_id:", batch.n_id)
-        # print("data op codes:")
-        # for idx in range(5):
-        #     print(data.node_opcode[idx])
-
-        # print("batch op codes:")
-        for idx in range(batch.n_id.shape[0]):
-            assert torch.equal(batch.node_opcode[idx], data.node_opcode[batch.n_id[idx]]), ""
-
-        for idx in range(batch.e_id.shape[0]):
-            assert torch.equal(batch.n_id[batch.edge_index.T[idx,:]], data.edge_index.T[batch.e_id[idx], :]), ""
-        print("-------------------------------------------")
-
-
-
-
-
-    # data_kc = KarateClub()
-    # print(f"{data_kc.data}=")
-    # # print(f"{data_kc.data.x}=")
-    # # print(f"{data_kc.data.edge_index}=")
-    # # print(f"{data_kc.data.y}=")
-    # print(f"{data_kc.data.train_mask}=")
-    # # print(f"{data_kc.data.edge_index}=")
-    
-    # print("-------------------------------------------")
-    # loader_f = pyg.loader.NeighborLoader(data_kc.data, num_neighbors=[-1, -1], batch_size=10, is_sorted=False, shuffle=False)
-
-    # for batch in loader_f:
-    #     print(batch)
-    #     print(batch.n_id)
-    #     print("-------------------------------------------")
+        print("--------------------------------------------------")
