@@ -120,7 +120,8 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
             runtime = layout_dict["config_runtime"]
             assert (runtime == 0).all().item() is False, "Loader Error: all emelents are 0!"
             assert (runtime == 0).any().item() is False, "Loader Error: one emelent is 0!"
-
+        
+        print("--------------------- Graph ----------------------")
         for k, v in layout_dict.items():
             print(k,v.shape)
 
@@ -203,31 +204,44 @@ class LayoutCollator:
         node_opcode      | Type: <class 'numpy.ndarray'> | Dtype: uint8    | Shape (1696,)
         node_feat        | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (1696, 140)
         edge_index       | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (2697, 2)
-        node_config_feat | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (num_configs, 121, 18)
+        node_config_feat | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (num_selected_configs, 121, 18)
         node_config_ids  | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (121,)
-        config_runtime   | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (num_configs,)
+        config_runtime   | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (num_selected_configs,)
         node_splits      | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (1, 2)
         """    
 
-        assert len(batch) == 1, "len(batch) != 1"
+        assert len(batch) == 1, \
+            "Due to limited GPU memory, currently we only support batch size of 1!"
+        
         graph = batch[0]
 
-        node_opcode = graph['node_opcode'].long()
-            
+        num_nodes = graph['node_opcode'].shape[0]
+        num_selected_configs = graph['node_config_feat'].shape[0]
+
+        node_opcode = graph['node_opcode'].to(dtype=torch.float32).view(-1, 1)
         node_feat = graph['node_feat']
+        node_feat = torch.cat([node_opcode, node_feat], dim=1)
+        node_feat = node_feat.unsqueeze(0).repeat(num_selected_configs, 1, 1)  # (num_selected_configs, num_nodes, NODE_FEATS+1)
+        print(node_feat.shape)
+
+        node_config_ids = graph['node_config_ids'].long()
+        node_config_feat = graph['node_config_feat']
+        node_config_feat = self._transform_node_config_features(node_config_feat, node_config_ids, num_nodes)  # (num_selected_configs, num_nodes, CONFIG_FEAT)
+        print(node_config_feat.shape)
+
+        node_feat = torch.cat([node_feat, node_config_feat], dim=2) # (num_selected_configs, num_nodes, CONFIG_FEAT + NODE_FEATS + 1)
+        print(node_feat.shape)
+
+        node_feat = node_feat.transpose(0,1) # (num_nodes, num_selected_configs, CONFIG_FEAT + NODE_FEATS + 1)
+        print(node_feat.shape)
+
+        node_feat = node_feat.reshape(num_nodes, -1) # (num_nodes, num_selected_configs * (CONFIG_FEAT + NODE_FEATS + 1) )
+        print(node_feat.shape)
 
         edge_index = graph['edge_index'].flip(dims=[1]).T
             
-        num_nodes = node_opcode.shape[0]
-
-        node_config_ids = graph['node_config_ids'].long()
-
         train_mask = torch.zeros((num_nodes,), dtype=torch.bool)
         train_mask[node_config_ids] = True
-
-        node_config_feat = graph['node_config_feat']
-        node_config_feat = self._transform_node_config_features(node_config_feat, node_config_ids, num_nodes)  # (num_selected_configs, num_nodes, CONFIG_FEAT)            
-        node_config_feat = node_config_feat.view(-1, self.CONFIG_FEATS) # (num_selected_configs * num_nodes, CONFIG_FEAT)
 
         # there will be padding if number of sample config runtimes are different
         if self.targets:
@@ -235,7 +249,7 @@ class LayoutCollator:
             selected_configs = graph['selected_configs']
             data = Data(edge_index=edge_index.contiguous(),                  # (2, UNK)
                             x=node_feat.contiguous(),                        # (num_nodes, NODE_OP_CODES)
-                            node_opcode=node_opcode.contiguous(),            # (num_nodes, )
+                            # node_opcode=node_opcode.contiguous(),            # (num_nodes, )
                             # node_config_feat=node_config_feat.contiguous(),  # (num_configs * num_nodes, CONFIG_FEAT, )
                             # y=config_runtime.contiguous(),                   # (num_configs,)
                             # selected_configs=selected_configs.contiguous(),  # (num_configs,)
@@ -248,7 +262,7 @@ class LayoutCollator:
 
             data = Data(edge_index=edge_index.contiguous(),                  # (2, UNK)
                             x=node_feat.contiguous(),                        # (num_nodes, NODE_OP_CODES)
-                            node_opcode=node_opcode.contiguous(),            # (num_nodes, )
+                            # node_opcode=node_opcode.contiguous(),            # (num_nodes, )
                             train_mask=train_mask,
                             # node_config_feat=node_config_feat,  # (num_configs * num_nodes, CONFIG_FEAT, )
                         )
@@ -274,9 +288,9 @@ class LayoutCollator:
             for idx in range(batch.n_id.shape[0]):
                 assert torch.equal(batch.x[idx, :], data.x[batch.n_id[idx], :]), ""
             
-            # verify nodes id    
-            for idx in range(batch.n_id.shape[0]):
-                assert torch.equal(batch.node_opcode[idx], data.node_opcode[batch.n_id[idx]]), ""
+            ## verify nodes id    
+            # for idx in range(batch.n_id.shape[0]):
+            #     assert torch.equal(batch.node_opcode[idx], data.node_opcode[batch.n_id[idx]]), ""
 
             # verify edges
             for idx in range(batch.e_id.shape[0]):
