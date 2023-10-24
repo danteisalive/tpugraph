@@ -235,8 +235,8 @@ class LayoutCollator:
         node_feat = node_feat.transpose(0,1) # (num_nodes, num_selected_configs, CONFIG_FEAT + NODE_FEATS + 1)
         print(node_feat.shape)
 
-        node_feat = node_feat.reshape(num_nodes, -1) # (num_nodes, num_selected_configs * (CONFIG_FEAT + NODE_FEATS + 1) )
-        print(node_feat.shape)
+        # node_feat = node_feat.reshape(num_nodes, -1) # (num_nodes, num_selected_configs * (CONFIG_FEAT + NODE_FEATS + 1) )
+        # print(node_feat.shape)
 
         edge_index = graph['edge_index'].flip(dims=[1]).T
             
@@ -286,11 +286,7 @@ class LayoutCollator:
 
             # verify node features equivalance 
             for idx in range(batch.n_id.shape[0]):
-                assert torch.equal(batch.x[idx, :], data.x[batch.n_id[idx], :]), ""
-            
-            ## verify nodes id    
-            # for idx in range(batch.n_id.shape[0]):
-            #     assert torch.equal(batch.node_opcode[idx], data.node_opcode[batch.n_id[idx]]), ""
+                assert torch.equal(batch.x[idx], data.x[batch.n_id[idx]]), ""
 
             # verify edges
             for idx in range(batch.e_id.shape[0]):
