@@ -48,12 +48,8 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
                  split_names : List[str],
                  search : str,
                  source : str,
-                 num_configs : int = 32, 
-                 max_configs : Optional[int] = None,
                 ):
         
-        self.num_configs = num_configs
-        self.max_configs = max_configs
         self.split_names = split_names     
         self.search = search   
         self.source = source
@@ -81,17 +77,8 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
         tile_dict =  dict(np.load(path))
         tile_dict = {k: torch.from_numpy(v) for k, v in tile_dict.items()}
         return tile_dict    
-
-    def select_configs(self, total_configs:int):
-        if self.max_configs is not None:
-            total_configs = min(total_configs, self.max_configs)
-        if self.num_configs == -1:
-            return np.arange(total_configs)
-        if total_configs < self.num_configs:
-            return np.random.choice(total_configs, self.num_configs, replace=True)
-        return  np.random.choice(total_configs, self.num_configs, replace=False)
     
-    def __getitem__(self, idx:int, selected_configs:List[int]=None):
+    def __getitem__(self, idx:int,):
         """
         node_feat        | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (1696, 140)
         node_opcode      | Type: <class 'numpy.ndarray'> | Dtype: uint8    | Shape (1696,)
@@ -103,14 +90,8 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
         """        
         
         layout_dict = self._layout_loader(self.df.paths[idx])
-        if selected_configs is None:
-            selected_configs = self.select_configs(layout_dict['node_config_feat'].shape[0])
-
-        layout_dict['node_config_feat'] = layout_dict['node_config_feat'][selected_configs]
 
         layout_dict['config_runtime'] = F.normalize(layout_dict['config_runtime'].to(dtype=torch.float32), dim = -1)
-        layout_dict['config_runtime'] = layout_dict['config_runtime'][selected_configs] 
-        layout_dict['selected_configs'] = torch.from_numpy(selected_configs)
 
         if "edge_index" not in layout_dict:
             raise ValueError(f"Can't find edge_index in the dataset!")
@@ -137,8 +118,12 @@ class LayoutCollator:
 
     PADDING_VALUE = NODE_OP_CODES + 1
 
-    def __init__(self,):
-        pass
+    def __init__(self,
+                num_configs : int = 32, 
+                 max_configs : Optional[int] = None,
+                 ):
+        self.num_configs = num_configs
+        self.max_configs = max_configs
 
     def _delete_data_attributes(self, 
                                data : Data, 
@@ -198,15 +183,23 @@ class LayoutCollator:
 
         return zeros # (num_configs, num_nodes, CONFIG_FEAT)
 
+    def _select_configs(self, total_configs:int):
+        if self.max_configs is not None:
+            total_configs = min(total_configs, self.max_configs)
+        if self.num_configs == -1:
+            return np.arange(total_configs)
+        if total_configs < self.num_configs:
+            return np.random.choice(total_configs, self.num_configs, replace=True)
+        return  np.random.choice(total_configs, self.num_configs, replace=False)
 
-    def __call__(self, batch : List):
+    def __call__(self, batch : List, selected_configs:List[int]=None):
         """
         node_opcode      | Type: <class 'numpy.ndarray'> | Dtype: uint8    | Shape (1696,)
         node_feat        | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (1696, 140)
         edge_index       | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (2697, 2)
-        node_config_feat | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (num_selected_configs, 121, 18)
+        node_config_feat | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (num_configs, 121, 18)
         node_config_ids  | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (121,)
-        config_runtime   | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (num_selected_configs,)
+        config_runtime   | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (num_configs,)
         node_splits      | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (1, 2)
         """    
 
@@ -215,8 +208,12 @@ class LayoutCollator:
         
         graph = batch[0]
 
+        if selected_configs is None:
+            selected_configs = self._select_configs(graph['node_config_feat'].shape[0])
+
+
         num_nodes = graph['node_opcode'].shape[0]
-        num_selected_configs = graph['node_config_feat'].shape[0]
+        num_selected_configs = len(selected_configs)
 
         node_opcode = graph['node_opcode'].to(dtype=torch.float32).view(-1, 1)
         node_feat = graph['node_feat']
@@ -225,7 +222,7 @@ class LayoutCollator:
         print(node_feat.shape)
 
         node_config_ids = graph['node_config_ids'].long()
-        node_config_feat = graph['node_config_feat']
+        node_config_feat = graph['node_config_feat'][selected_configs]
         node_config_feat = self._transform_node_config_features(node_config_feat, node_config_ids, num_nodes)  # (num_selected_configs, num_nodes, CONFIG_FEAT)
         print(node_config_feat.shape)
 
@@ -245,26 +242,20 @@ class LayoutCollator:
 
         # there will be padding if number of sample config runtimes are different
         if self.targets:
-            config_runtime = graph['config_runtime']
-            selected_configs = graph['selected_configs']
-            data = Data(edge_index=edge_index.contiguous(),                  # (2, UNK)
-                            x=node_feat.contiguous(),                        # (num_nodes, NODE_OP_CODES)
-                            # node_opcode=node_opcode.contiguous(),            # (num_nodes, )
-                            # node_config_feat=node_config_feat.contiguous(),  # (num_configs * num_nodes, CONFIG_FEAT, )
-                            # y=config_runtime.contiguous(),                   # (num_configs,)
-                            # selected_configs=selected_configs.contiguous(),  # (num_configs,)
-                            train_mask=train_mask,
-                            # node_config_ids=node_config_ids,
+            config_runtime = graph['config_runtime'][selected_configs]
+            data = Data(edge_index=edge_index.contiguous(),                                     # (2, UNK)
+                            x=node_feat.contiguous(),                                           # (num_nodes, num_selected_configs, CONFIG_FEAT + NODE_FEATS + 1)
+                            y=config_runtime.contiguous(),                                      # (num_selected_configs,)
+                            selected_configs=torch.from_numpy(selected_configs).contiguous(),   # (num_selected_configs,)
+                            train_mask=train_mask,                                              # (num_nodes,)
                         )
             # print(f"{edge_index.shape=}, {edge_index.dtype=}, {node_feat.shape=}, {node_feat.dtype=}, {node_opcode.shape=}, {node_opcode.dtype=}, {node_config_feat.shape=}, {node_config_feat.dtype=}, {config_runtime.shape=}, {config_runtime.dtype=}")
                 
         else:
 
             data = Data(edge_index=edge_index.contiguous(),                  # (2, UNK)
-                            x=node_feat.contiguous(),                        # (num_nodes, NODE_OP_CODES)
-                            # node_opcode=node_opcode.contiguous(),            # (num_nodes, )
-                            train_mask=train_mask,
-                            # node_config_feat=node_config_feat,  # (num_configs * num_nodes, CONFIG_FEAT, )
+                            x=node_feat.contiguous(),                        # (num_nodes, num_selected_configs, CONFIG_FEAT + NODE_FEATS + 1)
+                            train_mask=train_mask,                           # (num_nodes,)
                         )
             
         data.validate(raise_on_error=True)
