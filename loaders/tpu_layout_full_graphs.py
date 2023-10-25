@@ -120,10 +120,12 @@ class LayoutCollator:
 
     def __init__(self,
                 num_configs : int = 32, 
-                 max_configs : Optional[int] = None,
+                max_configs : Optional[int] = None,
+                random_config_selection: bool = False,
                  ):
         self.num_configs = num_configs
         self.max_configs = max_configs
+        self.random_config_selection = random_config_selection
 
     def _delete_data_attributes(self, 
                                data : Data, 
@@ -183,15 +185,74 @@ class LayoutCollator:
 
         return zeros # (num_configs, num_nodes, CONFIG_FEAT)
 
-    def _select_configs(self, total_configs:int):
-        if self.max_configs is not None:
-            total_configs = min(total_configs, self.max_configs)
-        if self.num_configs == -1:
-            return np.arange(total_configs)
-        if total_configs < self.num_configs:
-            return np.random.choice(total_configs, self.num_configs, replace=True)
-        return  np.random.choice(total_configs, self.num_configs, replace=False)
+    def _histogram_sampling_configs(self, 
+                                    config_runtime : torch.Tensor, 
+                                    bins : int = 100) -> torch.Tensor:
+        # 1. Create a histogram of the tensor values.
+        hist = torch.histc(config_runtime, bins=bins, min=0, max=1)
+        
+        # 2. Normalize the histogram to create a probability distribution.
+        prob_dist = hist / hist.sum()
+        
+        # 3. Sample bin indices based on the histogram distribution.
+        sampled_bin_indices = torch.multinomial(prob_dist, self.num_configs, replacement=True)
 
+        # Convert bin indices to actual tensor indices.
+        bin_width = 1.0 / bins
+        sampled_config_runtime_indices = []
+        mask = torch.ones_like(config_runtime, dtype=torch.bool)  # Mask to keep track of chosen indices
+
+        for bin_idx in sampled_bin_indices:
+            # Define bin range
+            bin_start = bin_idx * bin_width
+            bin_end = (bin_idx + 1) * bin_width
+            
+            # Get indices from original tensor that fall within the current bin and haven't been chosen yet
+            possible_indices = (config_runtime >= bin_start) & (config_runtime < bin_end) & mask
+            if possible_indices.sum() == 0:  # If no available indices in this bin, skip
+                continue
+            chosen_idx = torch.multinomial(possible_indices.float(), 1)
+            mask[chosen_idx] = False  # Mask the chosen index so it's not selected again
+            sampled_config_runtime_indices.append(chosen_idx.item())
+
+        # In rare cases where less than the desired number of unique indices are chosen, 
+        # you can either return the available unique indices or fill the remaining slots by randomly sampling
+        # any remaining indices (based on your preference).
+        while len(sampled_config_runtime_indices) < self.num_configs:
+            remaining_indices = torch.nonzero(mask).squeeze()
+            if len(remaining_indices) == 0:
+                break
+            chosen_idx = remaining_indices[torch.randint(0, len(remaining_indices), (1,))]
+            mask[chosen_idx] = False
+            sampled_config_runtime_indices.append(chosen_idx.item())
+
+        assert len(sampled_config_runtime_indices) == self.num_configs, \
+            f"Config selector should return exactly self.num_configs of runtime confgis! {len(sampled_config_runtime_indices)=} {len(config_runtime)=}"
+        return torch.tensor(sampled_config_runtime_indices)
+
+    def _select_configs(self, 
+                        config_runtime: torch.Tensor,
+                        ) -> np.ndarray:
+        total_configs = config_runtime.shape[0]
+
+        # if there less than num_configs(default=32), then return a tensor of size 32 with replacement
+        if total_configs < self.num_configs:
+            return torch.from_numpy(np.random.choice(total_configs, self.num_configs, replace=True))
+        
+        # return all configs if we want all the configs
+        if self.num_configs == -1:
+            return torch.from_numpy(np.arange(total_configs))
+
+        if self.max_configs is not None: # Default = None
+            total_configs = min(total_configs, self.max_configs)
+
+        # return `total_configs` of random config_runtimes
+        if self.random_config_selection:
+            return torch.from_numpy(np.random.choice(total_configs, self.num_configs, replace=False))
+        
+        # return a number of samples based on a hitogram probability 
+        return self._histogram_sampling_configs(config_runtime=config_runtime)
+    
     def __call__(self, batch : List, selected_configs:List[int]=None):
         """
         node_opcode      | Type: <class 'numpy.ndarray'> | Dtype: uint8    | Shape (1696,)
@@ -209,7 +270,7 @@ class LayoutCollator:
         graph = batch[0]
 
         if selected_configs is None:
-            selected_configs = self._select_configs(graph['node_config_feat'].shape[0])
+            selected_configs = self._select_configs(graph['config_runtime'],)
 
 
         num_nodes = graph['node_opcode'].shape[0]
@@ -246,7 +307,7 @@ class LayoutCollator:
             data = Data(edge_index=edge_index.contiguous(),                                     # (2, UNK)
                             x=node_feat.contiguous(),                                           # (num_nodes, num_selected_configs, CONFIG_FEAT + NODE_FEATS + 1)
                             y=config_runtime.contiguous(),                                      # (num_selected_configs,)
-                            selected_configs=torch.from_numpy(selected_configs).contiguous(),   # (num_selected_configs,)
+                            selected_configs=selected_configs.contiguous(),   # (num_selected_configs,)
                             train_mask=train_mask,                                              # (num_nodes,)
                         )
             # print(f"{edge_index.shape=}, {edge_index.dtype=}, {node_feat.shape=}, {node_feat.dtype=}, {node_opcode.shape=}, {node_opcode.dtype=}, {node_config_feat.shape=}, {node_config_feat.dtype=}, {config_runtime.shape=}, {config_runtime.dtype=}")
