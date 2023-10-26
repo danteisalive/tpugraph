@@ -4,52 +4,15 @@ from torch_geometric.graphgym.config import cfg
 from torch_geometric.graphgym.models.gnn import FeatureEncoder, GNNPreMP
 from torch_geometric.graphgym.models.layer import SAGEConv, new_layer_config
 import pytorch_lightning as pl
-from torch_geometric.data import Data
-from torch_geometric.data import Batch
+from torch_geometric.data import Data, Batch
 from torch import nn
-import torchmetrics as tm
 
-from scipy.stats import kendalltau
 
 from .reduced_features_node_encoder import ReducedFeatureNodeEncoder
 
 from .multi_element_rank_loss import MultiElementRankLoss
-
-class KendallTau(tm.Metric):
-
-    higher_is_better = True
-
-    def __init__(self,) -> None:
-        super().__init__()
-        self.add_state("runtimes", default=[], dist_reduce_fx=None)
-
-    def update(self, 
-               preds: torch.Tensor, # (bs, num_configs)
-               target: torch.Tensor, # (bs, num_configs)
-               ) -> None:
-        """
-        Update the metric state
-        Args:
-            preds: Tensor of shape (bs, num_configs) with the predicted runtimes orders
-            target: Tensor of shape (bs, num_configs) with the target runtimes
-        """
-        predicted_rankings = preds.cpu().numpy()
-        actual_rankings = target.cpu().numpy()
-
-        # print(predicted_rankings.shape, actual_rankings.shape)
-
-        kts = []
-        for idx in range(len(preds)):
-            corr, _ = kendalltau(predicted_rankings[idx], actual_rankings[idx])
-            print(corr)
-            kts.append(corr)
-
-        self.runtimes.append(torch.Tensor(kts))
-
-
-    def compute(self) -> torch.Tensor:
-        return torch.cat(self.runtimes).mean()
-    
+from .ListMLE_loss import ListMLELoss
+from.kendal_tau_metric import KendallTau
 
 
 class TPULayoutModel(nn.Module):
@@ -61,7 +24,8 @@ class TPULayoutModel(nn.Module):
     def __init__(self, cfg):
         super().__init__()
 
-        self.loss_fn = MultiElementRankLoss(margin=0.1, number_permutations=4)
+        # self.loss_fn = MultiElementRankLoss(margin=0.1, number_permutations=4)
+        self.loss_fn = ListMLELoss()
 
         self.embedding_size = cfg.share.dim_in
         self.dim_out=1
@@ -206,8 +170,7 @@ class TPULayoutModel(nn.Module):
             # print(pred.shape, true.shape)
             # print(pred, true)
             outputs = {'outputs': pred, 'target': true, 'order': torch.argsort(true, dim=1)}
-            loss = 0
-            loss += self.loss_fn(pred, true, selected_configs)
+            loss = self.loss_fn(pred, true, selected_configs)
             outputs['loss'] = loss
 
         else:
