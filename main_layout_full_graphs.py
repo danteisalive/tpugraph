@@ -113,8 +113,8 @@ if __name__ == '__main__':
                                          search='random', 
                                          source='xla', 
                                          )
-        train_dataloader = DataLoader(train_dataset, collate_fn=LayoutCollator(num_configs=32), num_workers=NUM_CPUS, batch_size=cfg.train.batch_size, shuffle=True)
-        valid_dataloader = DataLoader(valid_dataset, collate_fn=LayoutCollator(num_configs=32), num_workers=NUM_CPUS, batch_size=cfg.train.batch_size)
+        train_dataloader = DataLoader(train_dataset, collate_fn=LayoutCollator(num_configs=8), num_workers=NUM_CPUS, batch_size=cfg.train.batch_size, shuffle=True)
+        valid_dataloader = DataLoader(valid_dataset, collate_fn=LayoutCollator(num_configs=8), num_workers=NUM_CPUS, batch_size=cfg.train.batch_size)
 
         model = get_model(cfg=cfg)
         logger = pl.loggers.CSVLogger("logs", name="tpu_layout_gnn")
