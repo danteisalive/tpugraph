@@ -126,7 +126,8 @@ if __name__ == '__main__':
         trainer_config = dict(
             max_epochs= 40,
             gradient_clip_val=1.0,
-            logger=logger,)
+            logger=logger,
+            enable_progress_bar=False,)
 
         # torch.set_float32_matmul_precision("medium")
         trainer = pl.Trainer(**trainer_config,)
