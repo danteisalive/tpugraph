@@ -63,8 +63,6 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
         self.df = df.query(query).reset_index(drop=True)
         
         print(f"Dataset has {self.split_names} samples and in total has {self.__len__()} graphs")
-
-        self.collate = LayoutCollator()
     
     @property
     def num_sample_config(self) -> int:
@@ -102,9 +100,9 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
             assert (runtime == 0).all().item() is False, "Loader Error: all emelents are 0!"
             assert (runtime == 0).any().item() is False, "Loader Error: one emelent is 0!"
         
-        print("--------------------- Graph ----------------------")
-        for k, v in layout_dict.items():
-            print(k,v.shape)
+        # print("--------------------- Graph ----------------------")
+        # for k, v in layout_dict.items():
+        #     print(k,v.shape)
 
         return layout_dict
     
@@ -119,7 +117,7 @@ class LayoutCollator:
     PADDING_VALUE = NODE_OP_CODES + 1
 
     def __init__(self,
-                num_configs : int = 32, 
+                num_configs : int, 
                 max_configs : Optional[int] = None,
                 random_config_selection: bool = False,
                  ):
@@ -280,18 +278,18 @@ class LayoutCollator:
         node_feat = graph['node_feat']
         node_feat = torch.cat([node_opcode, node_feat], dim=1)
         node_feat = node_feat.unsqueeze(0).repeat(num_selected_configs, 1, 1)  # (num_selected_configs, num_nodes, NODE_FEATS+1)
-        print(node_feat.shape)
+        # print(node_feat.shape)
 
         node_config_ids = graph['node_config_ids'].long()
         node_config_feat = graph['node_config_feat'][selected_configs]
         node_config_feat = self._transform_node_config_features(node_config_feat, node_config_ids, num_nodes)  # (num_selected_configs, num_nodes, CONFIG_FEAT)
-        print(node_config_feat.shape)
+        # print(node_config_feat.shape)
 
         node_feat = torch.cat([node_feat, node_config_feat], dim=2) # (num_selected_configs, num_nodes, CONFIG_FEAT + NODE_FEATS + 1)
-        print(node_feat.shape)
+        # print(node_feat.shape)
 
         node_feat = node_feat.transpose(0,1) # (num_nodes, num_selected_configs, CONFIG_FEAT + NODE_FEATS + 1)
-        print(node_feat.shape)
+        # print(node_feat.shape)
 
         # node_feat = node_feat.reshape(num_nodes, -1) # (num_nodes, num_selected_configs * (CONFIG_FEAT + NODE_FEATS + 1) )
         # print(node_feat.shape)
@@ -313,7 +311,6 @@ class LayoutCollator:
             # print(f"{edge_index.shape=}, {edge_index.dtype=}, {node_feat.shape=}, {node_feat.dtype=}, {node_opcode.shape=}, {node_opcode.dtype=}, {node_config_feat.shape=}, {node_config_feat.dtype=}, {config_runtime.shape=}, {config_runtime.dtype=}")
                 
         else:
-
             data = Data(edge_index=edge_index.contiguous(),                  # (2, UNK)
                             x=node_feat.contiguous(),                        # (num_nodes, num_selected_configs, CONFIG_FEAT + NODE_FEATS + 1)
                             train_mask=train_mask,                           # (num_nodes,)
@@ -332,7 +329,7 @@ class LayoutCollator:
             directed=True,
         )
 
-        print("--------------------- Batch ----------------------")
+        # print("--------------------- Batch ----------------------")
         batch_list = []
         for batch in loader:
 
@@ -347,7 +344,7 @@ class LayoutCollator:
             assert batch.is_directed(), ""
             batch = self._delete_data_attributes(batch, ['train_mask', 'node_config_id', 'n_id', 'e_id', 'input_id'])
 
-            print(batch)
+            # print(batch)
 
             batch_list.append(batch)
         

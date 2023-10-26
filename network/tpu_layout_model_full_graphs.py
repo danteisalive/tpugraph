@@ -1,0 +1,331 @@
+import torch
+import torch_geometric.graphgym.models.head  # noqa, register module
+import torch_geometric.graphgym.register as register
+from torch_geometric.graphgym.config import cfg
+from torch_geometric.graphgym.models.gnn import FeatureEncoder, GNNPreMP
+from torch_geometric.graphgym.register import register_network
+from torch_geometric.graphgym.models.layer import SAGEConv, new_layer_config
+import pytorch_lightning as pl
+from torch_geometric.data import Data
+from torch_geometric.data import Batch
+from torch import nn
+import torchmetrics as tm
+from torch_sparse import SparseTensor
+
+from scipy.stats import kendalltau
+
+from .reduced_features_node_encoder import ReducedFeatureNodeEncoder
+
+class MultiElementRankLoss(nn.Module):
+    """
+    Loss function that compares the output of the model with the output of the model with a permutation of the elements
+    """
+    
+    def __init__(self, margin:float=0.0, number_permutations:int = 1) -> None:
+        super().__init__()
+        self.loss_fn = torch.nn.MarginRankingLoss(margin=margin, reduction = 'none')
+        self.number_permutations = number_permutations
+    
+    def calculate_rank_loss(self,
+                            outputs: torch.Tensor,
+                            config_runtime: torch.Tensor,
+                            config_idxs: torch.Tensor
+                            ):
+        """
+        Generates a permutation of the predictions and targets and calculates the loss MarginRankingLoss against the permutation
+        Args:
+            outputs: Tensor of shape (bs, seq_len) with the outputs of the model
+            config_runtime: Tensor of shape (bs, seq_len) with the runtime of the model
+            config_mask: Tensor of shape (bs, seq_len) with 1 in the positions of the elements
+            and 0 in the positions of the padding
+        Returns:
+            loss: Tensor of shape (bs, seq_len) with the loss for each element in the batch
+        """
+        bs, num_configs = outputs.shape
+        permutation = torch.randperm(num_configs) 
+        permuted_idxs = config_idxs[:, permutation]
+        # We mask those cases where we compare the same configuration
+        config_mask = torch.where(config_idxs != permuted_idxs, 1, 0)
+        permuted_runtime = config_runtime[:, permutation]
+        labels = 2*((config_runtime - permuted_runtime) > 0) -1
+        permuted_output = outputs[:, permutation]
+        loss = self.loss_fn(outputs.view(-1,1), permuted_output.view(-1,1), labels.view(-1,1))
+        loss = loss.view(bs, num_configs) * config_mask
+        return loss.mean()
+                
+    
+    def forward(self,
+                outputs: torch.Tensor,
+                config_runtime: torch.Tensor,
+                config_idxs: torch.Tensor
+                ):
+        loss = 0 
+        for _ in range(self.number_permutations):
+            loss += self.calculate_rank_loss(outputs, config_runtime, config_idxs)
+        return loss/ self.number_permutations
+
+
+class KendallTau(tm.Metric):
+
+    higher_is_better = True
+
+    def __init__(self,) -> None:
+        super().__init__()
+        self.add_state("runtimes", default=[], dist_reduce_fx=None)
+
+    def update(self, 
+               preds: torch.Tensor, # (bs, num_configs)
+               target: torch.Tensor, # (bs, num_configs)
+               ) -> None:
+        """
+        Update the metric state
+        Args:
+            preds: Tensor of shape (bs, num_configs) with the predicted runtimes orders
+            target: Tensor of shape (bs, num_configs) with the target runtimes
+        """
+        predicted_rankings = preds.cpu().numpy()
+        actual_rankings = target.cpu().numpy()
+
+        # print(predicted_rankings.shape, actual_rankings.shape)
+
+        kts = []
+        for idx in range(len(preds)):
+            corr, _ = kendalltau(predicted_rankings[idx], actual_rankings[idx])
+            print(corr)
+            kts.append(corr)
+
+        self.runtimes.append(torch.Tensor(kts))
+
+
+    def compute(self) -> torch.Tensor:
+        return torch.cat(self.runtimes).mean()
+    
+
+
+class TPULayoutModel(nn.Module):
+    
+    NODE_OP_CODES = 120
+    NODE_FEATS = 140
+    CONFIG_FEATS = 18
+
+    def __init__(self, cfg):
+        super().__init__()
+
+        self.loss_fn = MultiElementRankLoss(margin=0.1, number_permutations=4)
+
+        self.embedding_size = cfg.share.dim_in
+        self.dim_out=1
+        self.num_sample_config = 32
+        self.node_encoder = ReducedFeatureNodeEncoder(embedding_size=self.embedding_size)
+
+
+        """
+        Creates a NN layer used before message passing, given the specified
+        input and output dimensions and the underlying configuration in cfg
+        Reseaons to put this here: 
+        1) Regularization => Regularization techniques, such as dropout (this case) or batch normalization, can be applied in this layer to prevent overfitting and improve the model's generalization ability.
+        2) Input Transformation: Before message passing, you often want to transform the node features into a suitable representation for the specific task at hand. 
+        3) Learnable Node Representations: The NN layer typically learns node representations that are optimized for the downstream task. 
+        4) Parameter Sharing: In GNNs, message passing involves aggregating information from neighboring nodes. By using a shared NN layer for all nodes, you ensure that the transformation applied to one node is consistent with that applied to its neighbors. 
+        5) Expressiveness: The NN layer adds expressiveness to the model. It allows the GNN to capture complex relationships and patterns within the graph, which might not be directly observable in the raw node features.
+        6) Initialization: The NN layer provides an opportunity to initialize node representations in a meaningful way.
+        """
+        """
+        (pre_mp): GeneralMultiLayer(
+        (Layer_0): GeneralLayer(
+          (layer): Linear(
+            (model): Linear(128, 256, bias=True)
+          )
+          (post_layer): Sequential(
+            (0): Dropout(p=0.1, inplace=False)
+            (1): PReLU(num_parameters=1)
+          )
+        )
+        )
+        """
+        dim_in=self.embedding_size
+        self.pre_mp = None
+        if cfg.gnn.layers_pre_mp > 0:
+            self.pre_mp = GNNPreMP(
+                dim_in, cfg.gnn.dim_inner, cfg.gnn.layers_pre_mp)
+            dim_in = cfg.gnn.dim_inner
+
+        conv_model = self.build_conv_model(cfg.gnn.layer_type)
+        layers = []
+        layer_cfg = new_layer_config(dim_in, dim_in, 1, has_act=True, has_bias=True, cfg=cfg)
+        for _ in range(cfg.gnn.layers_mp):
+            layers.append(conv_model(layer_cfg))
+        self.gnn_layers = torch.nn.Sequential(*layers)
+
+
+        """
+        GNNGraphHead(
+                (layer_post_mp): MLP(
+                (model): Sequential(
+                    (0): GeneralMultiLayer(
+                    (Layer_0): GeneralLayer(
+                        (layer): Linear(
+                        (model): Linear(256, 256, bias=True)
+                        )
+                        (post_layer): Sequential(
+                        (0): ReLU()
+                        )
+                    )
+                    )
+                    (1): Linear(
+                    (model): Linear(256, 1, bias=True)
+                    )
+                )
+                )
+        """
+        
+        """     
+        # dim_in = 256, dim_out = 1
+        # we use a F' = GNNGraphHead as prediction head which is defined in torch geometric head.py package
+        # it is a MLP with two layers => nn.Linear(256,256) + ReLU() + nn.Linear(256,1)
+        """
+        GNNHead = register.head_dict[cfg.gnn.head]
+        self.post_mp = GNNHead(dim_in=dim_in, dim_out=self.dim_out)
+
+    def build_conv_model(self, model_type):
+        if model_type == 'gatedgcnconv':
+            return GatedGCNLayer
+        elif model_type == 'gineconv':
+            return GINEConvLayer
+        elif model_type == 'sageconv':
+            return SAGEConv
+        else:
+            raise ValueError("Model {} unavailable".format(model_type))
+
+    def forward(self, batch : Batch):
+        
+        # print(batch)
+        # First encode nodes feataures
+        batch = self.node_encoder(batch)
+
+        batch_train_list = []
+        for graph in batch.to_data_list():
+
+            config_edge_index = graph.edge_index 
+            num_configs = graph.x.shape[1]  # x.shape = (num_nodes, num_selected_configs, embedding_size)
+
+            for config_idx in range(num_configs):
+
+                config_x = graph.x[:, config_idx, :] # config_x.shape = (num_nodes, embedding_size)
+                             
+                # test data
+                if hasattr(graph, 'y') is False:
+                    config_graph = Data(edge_index=config_edge_index, x=config_x)
+
+                # train and valid data
+                else: 
+                    config_y = graph.y[config_idx]       
+                    selected_config = graph.selected_configs[config_idx]      
+                    config_graph = Data(edge_index=config_edge_index, x=config_x, y=config_y, selected_config=selected_config)
+                
+                batch_train_list.append(config_graph)
+
+        batch = Batch.from_data_list(batch_train_list)
+
+
+        # print("Before passing into PreMP:")
+        # print(batch)
+        # for graph in batch.to_data_list():
+        #     print(graph)
+        if self.pre_mp is not None:
+            batch = self.pre_mp(batch)
+
+        # print("Before passing into GNN layers:")
+        # print(batch)
+        batch = self.gnn_layers(batch)
+
+        # print("Before passing into Prediction Head:")
+        # print(batch)
+        pred, true = self.post_mp(batch)        
+        # print(pred.shape, true.shape)
+        # print(pred, true)
+
+        # calculate loss:
+        pred = pred.view(-1, num_configs)
+        if hasattr(batch, 'selected_config'):
+
+            selected_configs = batch.selected_config.view(-1, num_configs)
+            true = true.view(-1, num_configs)
+            # print(pred.shape, true.shape)
+            # print(pred, true)
+            outputs = {'outputs': pred, 'target': true, 'order': torch.argsort(true, dim=1)}
+            loss = 0
+            loss += self.loss_fn(pred, true, selected_configs)
+            outputs['loss'] = loss
+
+        else:
+            outputs = {'outputs': pred}
+
+        return outputs
+        
+
+
+class LightningWrapper(pl.LightningModule):
+    def __init__(self, model:nn.Module):
+        super().__init__()
+        self.model = model
+        self.kendall_tau = KendallTau()
+        
+    def forward(self, batch : Batch):
+        return self.model(batch)
+
+    def training_step(self, batch : Batch, batch_idx):
+
+        outputs = self.model(batch)
+        loss = outputs['loss']
+        self.log("train_loss", loss, prog_bar=False)
+
+        return loss
+
+    def validation_step(self, batch : Batch, batch_idx):
+
+        outputs = self.model(batch)
+        loss = outputs['loss']
+
+        self.log("val_loss", loss, prog_bar=False)
+
+        self.kendall_tau.update(outputs['outputs'], outputs['target'],)
+    
+        kendall_tau = self.kendall_tau.compute()
+        self.log("kendall_tau", kendall_tau)
+
+        return loss
+    
+    def on_validation_end(self) -> None:
+
+        kendall_tau = self.kendall_tau.compute()
+        self.print(f"kendall_tau {kendall_tau:.3f}")
+
+        self.kendall_tau.reset()
+
+        return super().on_validation_end()
+
+    def test_step(self, batch, batch_idx):
+        assert(0)
+        x, y = batch
+        y_hat = self.model(x)
+        loss = self.model.loss(y_hat, y)
+        self.log("test_loss", loss, prog_bar=True)
+        return loss
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(self.trainer.model.parameters(), lr=1e-3)
+        return optimizer
+
+
+
+
+def get_model(cfg):
+
+    model = TPULayoutModel(cfg)
+    model = LightningWrapper(model)
+    model.to(torch.device(cfg.accelerator))
+
+    return model
+
+

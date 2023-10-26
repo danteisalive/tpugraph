@@ -6,7 +6,7 @@ dataset:
   task_type: ranking
   transductive: False
 train:
-  batch_size: 4
+  batch_size: 1
   eval_period: 1
   ckpt_period: 100
   sampler: full_batch
