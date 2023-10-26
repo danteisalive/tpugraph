@@ -66,7 +66,9 @@ class TPULayoutModel(nn.Module):
         self.embedding_size = cfg.share.dim_in
         self.dim_out=1
         self.num_sample_config = 32
-        self.node_encoder = ReducedFeatureNodeEncoder(embedding_size=self.embedding_size)
+        self.node_encoder = ReducedFeatureNodeEncoder(input_dim=self.CONFIG_FEATS + self.NODE_FEATS + 1, 
+                                                      output_dim=self.embedding_size
+                                                      )
 
 
         """
