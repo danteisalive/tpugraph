@@ -17,35 +17,30 @@ NUM_CPUS = os.cpu_count()
 
 
 class GAT(torch.nn.Module):
-    
-    def __init__(self, in_channels, hidden_channels, out_channels, heads):
+
+    NODE_FEATS = 140
+    CONFIG_FEATS = 18
+
+    def __init__(self, hidden_channels, out_channels, heads):
         super().__init__()
         
+        in_channels = self.CONFIG_FEATS + self.NODE_FEATS + 1
+
         self.conv1 = GATConv(in_channels, hidden_channels, heads, dropout=0.6)
         self.conv2 = GATConv(hidden_channels * heads, out_channels, heads=heads, dropout=0.6)
         
         self.lin = nn.Linear(out_channels * heads, 1)
 
-        # self.conv1 = GATConv(3, self.hid, heads=self.head, dropout=0.6)
-        # self.conv2 = GATConv(self.hid * self.head, self.hid, heads=self.head,
-        #                      dropout=0.6)
-
-        # self.lin = nn.Linear(self.hid * self.head, 1)
-
     def forward(self, batch, ):
         x = batch.x
         edge_index = batch.edge_index
         x = F.dropout(x, p=0.6, training=self.training)
-        print(x.shape)
         x = F.elu(self.conv1(x, edge_index))
-        print(x.shape)
         x = F.dropout(x, p=0.6, training=self.training)
         x = self.conv2(x, edge_index)
 
-        print(x.shape)
         x = global_mean_pool(x, batch.batch) + global_max_pool(x, batch.batch)
 
-        print(x.shape)
         x = self.lin(x)
 
         return x
@@ -107,7 +102,7 @@ if __name__ == '__main__':
     train_dataloader = DataLoader(train_dataset, collate_fn=LayoutCollator(num_configs=64), num_workers=NUM_CPUS, batch_size=1, shuffle=True)
     valid_dataloader = DataLoader(valid_dataset, collate_fn=LayoutCollator(num_configs=64), num_workers=NUM_CPUS, batch_size=1)
 
-    model = GAT(159, args.hidden_channels, args.out_channels, args.heads).to(device)
+    model = GAT(args.hidden_channels, args.out_channels, args.heads).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.005, weight_decay=5e-4)
 
     print(model)
