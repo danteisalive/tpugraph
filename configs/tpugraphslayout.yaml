@@ -33,4 +33,4 @@ optim:
   max_epoch: 100
 share:
   dim_in: 128
-accelerator : cuda
+accelerator : cpu

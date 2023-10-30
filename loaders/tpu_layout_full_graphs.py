@@ -17,6 +17,7 @@ import torch.nn.functional as F
 from torch_geometric.loader import NeighborLoader
 import torch_geometric as pyg
 from torch_geometric.datasets import KarateClub
+import math 
 
 class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
 
@@ -324,10 +325,12 @@ class LayoutCollator:
         loader = NeighborLoader(
             data,
             num_neighbors=[-1] * 1, # Sample all neighbors for each node for 4 iterations
-            batch_size=512, # Use a batch size of ... for sampling training nodes
+            batch_size=4096, # Use a batch size of ... for sampling training nodes
             input_nodes=data.train_mask,
             directed=True,
         )
+        num_batches = math.ceil(len(loader.data) / loader.batch_size)
+        assert num_batches == 1, "After neighbor sampling, batch size should be 1!"
 
         # print("--------------------- Batch ----------------------")
         batch_list = []
@@ -349,7 +352,29 @@ class LayoutCollator:
             batch_list.append(batch)
         
 
-        return Batch.from_data_list(batch_list)
+        batch_train_list = []
+        for graph in batch_list:
+
+            config_edge_index = graph.edge_index 
+            num_configs = graph.x.shape[1]  # x.shape = (num_nodes, num_selected_configs, embedding_size)
+
+            for config_idx in range(num_configs):
+
+                config_x = graph.x[:, config_idx, :] # config_x.shape = (num_nodes, embedding_size)
+                             
+                # test data
+                if hasattr(graph, 'y') is False:
+                    config_graph = Data(edge_index=config_edge_index, x=config_x)
+
+                # train and valid data
+                else: 
+                    config_y = graph.y[config_idx]       
+                    selected_config = graph.selected_configs[config_idx]      
+                    config_graph = Data(edge_index=config_edge_index, x=config_x, y=config_y, selected_config=selected_config)
+                
+                batch_train_list.append(config_graph)
+
+        return Batch.from_data_list(batch_train_list)
 
 
 
@@ -360,7 +385,7 @@ if __name__ == '__main__':
                                         search='random', 
                                         source='xla',
                                         )
-    dataloader = DataLoader(dataset, collate_fn=LayoutCollator(), num_workers=1, batch_size=1, shuffle=True)
+    dataloader = DataLoader(dataset, collate_fn=LayoutCollator(num_configs=128), num_workers=1, batch_size=1, shuffle=True)
 
     for batch in dataloader:
         print(batch)
