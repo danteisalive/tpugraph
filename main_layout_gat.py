@@ -16,6 +16,7 @@ from torch_geometric.data import Data, Batch
 from network.multi_element_rank_loss import MultiElementRankLoss
 from network.ListMLE_loss import ListMLELoss
 from network.kendal_tau_metric import KendallTau
+from network.reduced_features_node_encoder import ReducedFeatureNodeEncoder
 
 NUM_CPUS = os.cpu_count() 
 NUM_CONFIGS = 32
@@ -36,7 +37,11 @@ class GAT(torch.nn.Module):
         self.num_configs = num_configs
         in_channels = self.CONFIG_FEATS + self.NODE_FEATS + 1
 
-        self.conv1 = GATConv(in_channels, hidden_channels, heads, dropout=0.6)
+        self.node_encoder = ReducedFeatureNodeEncoder(input_dim=in_channels, 
+                                                      output_dim=hidden_channels
+                                                      )
+
+        self.conv1 = GATConv(hidden_channels, hidden_channels, heads, dropout=0.6)
         self.conv2 = GATConv(hidden_channels * heads, out_channels, heads=heads, dropout=0.6)        
         self.lin = nn.Linear(out_channels * heads, 1)
 
@@ -47,6 +52,8 @@ class GAT(torch.nn.Module):
 
     def forward(self, batch,):
 
+        batch = self.node_encoder(batch)
+
         x = batch.x
         edge_index = batch.edge_index
         x = F.dropout(x, p=0.6, training=self.training)
@@ -55,6 +62,7 @@ class GAT(torch.nn.Module):
         x = self.conv2(x, edge_index)
 
         x = global_mean_pool(x, batch.batch) + global_max_pool(x, batch.batch)
+        # x = global_max_pool(x, batch.batch)
 
         pred = self.lin(x)
         true = batch.y
@@ -158,18 +166,17 @@ if __name__ == '__main__':
             log(Epoch=epoch, TrainLoss=train_loss,)
             times.append(time.time() - start)
 
-        assert(0)
-        
-        for batch in valid_dataloader:
-            batch = batch.to(device)
+
+        # for batch in valid_dataloader:
+        #     batch = batch.to(device)
             
-            start = time.time()
-            val_acc, val_loss = validation(batch=batch, model=model,)
-            if val_acc > best_val_acc:
-                best_val_acc = val_acc
-            log(Epoch=epoch, ValLoss=val_loss, ValAcc=val_acc,)
-            times.append(time.time() - start)
+        #     start = time.time()
+        #     val_acc, val_loss = validation(batch=batch, model=model,)
+        #     if val_acc > best_val_acc:
+        #         best_val_acc = val_acc
+        #     log(Epoch=epoch, ValLoss=val_loss, ValAcc=val_acc,)
+        #     times.append(time.time() - start)
         
-        model.kendall_tau.reset()
+        # model.kendall_tau.reset()
 
     print(f"Median time per epoch: {torch.tensor(times).median():.4f}s")

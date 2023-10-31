@@ -184,6 +184,40 @@ class LayoutCollator:
 
         return zeros # (num_configs, num_nodes, CONFIG_FEAT)
 
+    def _bin_sampling_configs(self, 
+                            config_runtime : torch.Tensor, 
+                            num_configs : int,
+                            ) -> torch.Tensor:
+        # Step 1: Calculate the histogram
+        num_bins = num_configs
+        hist = torch.histc(config_runtime, bins=num_bins)
+        print("HIST: ", config_runtime.shape,)
+        # Step 2: Determine the bin edges
+        min_val, max_val = config_runtime.min(), config_runtime.max()
+        bin_edges = torch.linspace(min_val, max_val, steps=num_bins+1)
+
+        # To store the selected indices
+        selected_indices = []
+
+        # Step 3: Iterate through each bin
+        for i in range(num_bins):
+            # Create a mask for the current bin
+            mask = (config_runtime >= bin_edges[i]) & (config_runtime < bin_edges[i+1])
+            
+            # Special case for the last bin to include the max_val
+            if i == num_bins - 1:
+                mask |= (config_runtime == max_val)
+                
+            # Get the indices of the elements in the current bin
+            indices_in_bin = torch.where(mask)[0]
+            
+            # Step 4: Randomly select one index from the indices_in_bin
+            if indices_in_bin.nelement() > 0:
+                selected_index = indices_in_bin[torch.randint(len(indices_in_bin), (1,))]
+                selected_indices.append(selected_index.item())
+
+        return torch.Tensor(selected_indices).long()
+
     def _histogram_sampling_configs(self, 
                                     config_runtime : torch.Tensor, 
                                     bins : int = 100) -> torch.Tensor:
@@ -231,7 +265,7 @@ class LayoutCollator:
 
     def _select_configs(self, 
                         config_runtime: torch.Tensor,
-                        ) -> np.ndarray:
+                        ) -> torch.Tensor:
         total_configs = config_runtime.shape[0]
 
         # if there less than num_configs(default=32), then return a tensor of size 32 with replacement
@@ -250,7 +284,8 @@ class LayoutCollator:
             return torch.from_numpy(np.random.choice(total_configs, self.num_configs, replace=False))
         
         # return a number of samples based on a hitogram probability 
-        return self._histogram_sampling_configs(config_runtime=config_runtime)
+        # return self._histogram_sampling_configs(config_runtime=config_runtime)
+        return self._bin_sampling_configs(config_runtime=config_runtime, num_configs=self.num_configs)
     
     def __call__(self, batch : List, selected_configs:List[int]=None):
         """
@@ -385,8 +420,8 @@ if __name__ == '__main__':
                                         search='random', 
                                         source='xla',
                                         )
-    dataloader = DataLoader(dataset, collate_fn=LayoutCollator(num_configs=128), num_workers=1, batch_size=1, shuffle=True)
+    dataloader = DataLoader(dataset, collate_fn=LayoutCollator(num_configs=8), num_workers=1, batch_size=1, shuffle=True)
 
     for batch in dataloader:
-        print(batch)
+        print(batch.y, batch.selected_config)
         print("--------------------------------------------------")
