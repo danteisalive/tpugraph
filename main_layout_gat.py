@@ -146,8 +146,8 @@ if __name__ == '__main__':
                                             search='random', 
                                             source='xla', 
                                             )
-    train_dataloader = DataLoader(train_dataset, collate_fn=LayoutCollator(num_configs=NUM_CONFIGS), num_workers=NUM_CPUS, batch_size=1, shuffle=True)
-    valid_dataloader = DataLoader(valid_dataset, collate_fn=LayoutCollator(num_configs=NUM_CONFIGS), num_workers=NUM_CPUS, batch_size=1)
+    train_dataloader = DataLoader(train_dataset, collate_fn=LayoutCollator(num_configs=NUM_CONFIGS, random_config_selection=False, max_configs=NUM_CONFIGS), num_workers=NUM_CPUS, batch_size=1, shuffle=True)
+    valid_dataloader = DataLoader(valid_dataset, collate_fn=LayoutCollator(num_configs=NUM_CONFIGS, random_config_selection=False, max_configs=NUM_CONFIGS), num_workers=NUM_CPUS, batch_size=1)
 
     model = GAT(args.hidden_channels, args.out_channels, args.heads, num_configs=NUM_CONFIGS).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.005, weight_decay=5e-4)

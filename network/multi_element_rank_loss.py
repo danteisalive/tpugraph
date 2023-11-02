@@ -30,23 +30,26 @@ class MultiElementRankLoss(nn.Module):
         permutation = torch.randperm(num_configs) 
         permuted_idxs = config_idxs[:, permutation]
 
-        print("config_idxs: ", config_idxs)
-        print("permuted_idxs: ", permuted_idxs)
+        # print("config_idxs: ", config_idxs)
+        # print("permuted_idxs: ", permuted_idxs)
         # We mask those cases where we compare the same configuration
         config_mask = torch.where(config_idxs != permuted_idxs, 1, 0)
         
-        print("config_mask: ", config_mask)
-        print("config_runtime: ", config_runtime)
+        # print("config_mask: ", config_mask)
+        # print("config_runtime: ", config_runtime)
         permuted_runtime = config_runtime[:, permutation]
-        print("permuted_runtime: ", permuted_runtime)
+        # print("permuted_runtime: ", permuted_runtime)
         labels = 2*((config_runtime - permuted_runtime) > 0) -1
         permuted_output = outputs[:, permutation]
 
-        print("outputs: ", outputs.view(-1,1))
-        print("permuted_output: ", permuted_output.view(-1,1))
-        print("labels: ", labels.view(-1,1))
+        # print("outputs: ", outputs)
+        # print("permuted_output: ", permuted_output.view(-1,1))
+        # print("labels: ", labels)
         loss = self.loss_fn(outputs.view(-1,1), permuted_output.view(-1,1), labels.view(-1,1))
         loss = loss.view(bs, num_configs) * config_mask
+        # print("loss:", loss)
+        # print("loss.mean():", loss.mean())
+        # print("---------------------------------------------")
         return loss.mean()
                 
     
@@ -133,20 +136,21 @@ if __name__ == '__main__':
             189,    0, 1129,  921,  153,  868,  785, 1049,  284,  101,  843,  985]],
         ).long()
 
-    outputs=torch.tensor([[ 3.13,  3.12,  3.14, ],
+    outputs=torch.tensor([[ 3.12, 3.12,  3.13,  3.14, ],
             ],
         )
 
-    config_runtime=torch.Tensor([[ 0.13,  0.12,  0.14, ],],
+    config_runtime=torch.Tensor([[ 0.12, 0.12, 0.13,  0.14, ],],
         )
 
-    config_idxs=torch.Tensor([[ 128, 110, 50],
+    config_idxs=torch.Tensor([[ 128, 110, 111, 50],
             ],
         ).long()
 
     """
     1) If all the `config_idxs` are the same, then we will get a zero loss
     2) If all the `config_runtime` are the same, then loss will not be zero and depdending on the outputs, it can take any value
+    3) if two configs with different indecies have the same runtime, then they will incure zero loss which is correct as they do'nt have any ranking
     """
 
     merl = MultiElementRankLoss()
