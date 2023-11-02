@@ -19,6 +19,49 @@ import torch_geometric as pyg
 from torch_geometric.datasets import KarateClub
 import math 
 
+"""
+Use case: 
+normalizer = NodeFeaturesNormalizer()
+normalized_matrix = normalizer._apply_normalizer(feature_matrix, *normalizer._get_normalizer(feature_matrix))
+"""
+class NodeFeaturesNormalizer:
+    def __init__(self):
+        pass
+
+    
+    def _get_normalizer(self,
+                        feature_matrix : torch.Tensor, 
+                       )-> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        
+        # Compute the maximum value for each feature across all samples
+        max_feat = torch.max(feature_matrix, dim=0,).values
+
+        # Compute the minimum value for each feature across all samples
+        min_feat = torch.min(feature_matrix, dim=0,).values
+
+        # Element-wise comparison to check for any variability for each feature
+        variability = (min_feat != max_feat)
+        
+        return variability, min_feat, max_feat
+        
+    def _apply_normalizer(self, 
+                          feature_matrix : torch.Tensor,  
+                          variability : torch.Tensor, 
+                          min_feat : torch.Tensor, 
+                          max_feat : torch.Tensor,
+                         ) -> torch.Tensor:
+        
+        # Apply the boolean mask to select the used columns for feature_matrix, min_feat, and max_feat
+        feature_matrix = feature_matrix[:, variability]
+        min_feat = min_feat[variability]
+        max_feat = max_feat[variability]
+
+        # Perform min-max normalization
+        normalized_features = (feature_matrix - min_feat) / (max_feat - min_feat)
+
+        return normalized_features
+
+
 class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
 
     NODE_OP_CODES = 120
@@ -87,7 +130,6 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
         config_runtime   | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (100040,)  
         node_splits      | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (1, 2)
         """        
-        
         layout_dict = self._layout_loader(self.df.paths[idx])
 
         layout_dict['config_runtime'] = F.normalize(layout_dict['config_runtime'].to(dtype=torch.float32), dim = -1)
@@ -106,7 +148,9 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
         #     print(k,v.shape)
 
         return layout_dict
-    
+
+            
+
 @dataclass
 class LayoutCollator:
     targets:bool = True
@@ -119,8 +163,8 @@ class LayoutCollator:
 
     def __init__(self,
                 num_configs : int, 
-                max_configs : Optional[int] = None,
-                random_config_selection: bool = False,
+                random_config_selection: bool,
+                max_configs : Optional[int],
                  ):
         self.num_configs = num_configs
         self.max_configs = max_configs
@@ -137,40 +181,6 @@ class LayoutCollator:
                 delattr(data, attr_name)
         return data
 
-    """
-    This function takes the layout `node_config_feat` tensor which has the shape of 
-    (num_configs, number_of_configurable_nodes, CONFIG_FEAT) and converts it into 
-    (num_configs, num_nodes, CONFIG_FEAT) using the `node_config_ids`
-    Inputs: 
-    node_config_feat = tensor([
-            [[ 0.4851,  1.7761],
-            [ 0.7147,  1.3434]],
-
-            [[ 1.7586, -0.7400],
-            [ 0.5283, -1.2116]],
-
-            [[ 0.9315,  1.1156],
-            [-1.1034,  1.6864]]])
-
-    node_config_ids = torch.Tensor([1,2]).long()
-    num_nodes = 4
-
-    Returns:       
-    tensor([[[ 0.0000,  0.0000],
-            [ 0.4851,  1.7761],
-            [ 0.7147,  1.3434],
-            [ 0.0000,  0.0000]],
-
-            [[ 0.0000,  0.0000],
-            [ 1.7586, -0.7400],
-            [ 0.5283, -1.2116],
-            [ 0.0000,  0.0000]],
-
-            [[ 0.0000,  0.0000],
-            [ 0.9315,  1.1156],
-            [-1.1034,  1.6864],
-            [ 0.0000,  0.0000]]])
-    """
     def _transform_node_config_features(self, 
                                        node_config_feat : torch.Tensor, # (num_configs, number_of_configurable_nodes, CONFIG_FEAT)
                                        node_config_ids : torch.Tensor, # (number_of_configurable_nodes,)
@@ -184,14 +194,27 @@ class LayoutCollator:
 
         return zeros # (num_configs, num_nodes, CONFIG_FEAT)
 
+    def _determenistic_sampling(self, 
+                            config_runtime : torch.Tensor, 
+                            num_configs : int,
+                            ) -> torch.Tensor:
+        
+        # Sort the tensor and get the indices
+        sorted_runtimes, sorted_indices = torch.sort(config_runtime)
+        # Get the first 8 indices after sorting
+        first_indices = sorted_indices[:num_configs]
+
+        return first_indices
+
     def _bin_sampling_configs(self, 
                             config_runtime : torch.Tensor, 
                             num_configs : int,
                             ) -> torch.Tensor:
+        
         # Step 1: Calculate the histogram
         num_bins = num_configs
         hist = torch.histc(config_runtime, bins=num_bins)
-        print("HIST: ", config_runtime.shape,)
+        # print("HIST: ", config_runtime.shape,)
         # Step 2: Determine the bin edges
         min_val, max_val = config_runtime.min(), config_runtime.max()
         bin_edges = torch.linspace(min_val, max_val, steps=num_bins+1)
@@ -218,51 +241,6 @@ class LayoutCollator:
 
         return torch.Tensor(selected_indices).long()
 
-    def _histogram_sampling_configs(self, 
-                                    config_runtime : torch.Tensor, 
-                                    bins : int = 100) -> torch.Tensor:
-        # 1. Create a histogram of the tensor values.
-        hist = torch.histc(config_runtime, bins=bins, min=0, max=1)
-        
-        # 2. Normalize the histogram to create a probability distribution.
-        prob_dist = hist / hist.sum()
-        
-        # 3. Sample bin indices based on the histogram distribution.
-        sampled_bin_indices = torch.multinomial(prob_dist, self.num_configs, replacement=True)
-
-        # Convert bin indices to actual tensor indices.
-        bin_width = 1.0 / bins
-        sampled_config_runtime_indices = []
-        mask = torch.ones_like(config_runtime, dtype=torch.bool)  # Mask to keep track of chosen indices
-
-        for bin_idx in sampled_bin_indices:
-            # Define bin range
-            bin_start = bin_idx * bin_width
-            bin_end = (bin_idx + 1) * bin_width
-            
-            # Get indices from original tensor that fall within the current bin and haven't been chosen yet
-            possible_indices = (config_runtime >= bin_start) & (config_runtime < bin_end) & mask
-            if possible_indices.sum() == 0:  # If no available indices in this bin, skip
-                continue
-            chosen_idx = torch.multinomial(possible_indices.float(), 1)
-            mask[chosen_idx] = False  # Mask the chosen index so it's not selected again
-            sampled_config_runtime_indices.append(chosen_idx.item())
-
-        # In rare cases where less than the desired number of unique indices are chosen, 
-        # you can either return the available unique indices or fill the remaining slots by randomly sampling
-        # any remaining indices (based on your preference).
-        while len(sampled_config_runtime_indices) < self.num_configs:
-            remaining_indices = torch.nonzero(mask).squeeze()
-            if len(remaining_indices) == 0:
-                break
-            chosen_idx = remaining_indices[torch.randint(0, len(remaining_indices), (1,))]
-            mask[chosen_idx] = False
-            sampled_config_runtime_indices.append(chosen_idx.item())
-
-        assert len(sampled_config_runtime_indices) == self.num_configs, \
-            f"Config selector should return exactly self.num_configs of runtime confgis! {len(sampled_config_runtime_indices)=} {len(config_runtime)=}"
-        return torch.tensor(sampled_config_runtime_indices)
-
     def _select_configs(self, 
                         config_runtime: torch.Tensor,
                         ) -> torch.Tensor:
@@ -284,8 +262,7 @@ class LayoutCollator:
             return torch.from_numpy(np.random.choice(total_configs, self.num_configs, replace=False))
         
         # return a number of samples based on a hitogram probability 
-        # return self._histogram_sampling_configs(config_runtime=config_runtime)
-        return self._bin_sampling_configs(config_runtime=config_runtime, num_configs=self.num_configs)
+        return self._determenistic_sampling(config_runtime=config_runtime, num_configs=self.num_configs)
     
     def __call__(self, batch : List, selected_configs:List[int]=None):
         """
@@ -420,7 +397,7 @@ if __name__ == '__main__':
                                         search='random', 
                                         source='xla',
                                         )
-    dataloader = DataLoader(dataset, collate_fn=LayoutCollator(num_configs=8), num_workers=1, batch_size=1, shuffle=True)
+    dataloader = DataLoader(dataset, collate_fn=LayoutCollator(num_configs=32, random_config_selection=False, max_configs=32), num_workers=1, batch_size=1, shuffle=True)
 
     for batch in dataloader:
         print(batch.y, batch.selected_config)
