@@ -15,8 +15,6 @@ from torch_geometric.data import Batch
 from torch.utils.data import  DataLoader
 import torch.nn.functional as F
 from torch_geometric.loader import NeighborLoader
-import torch_geometric as pyg
-from torch_geometric.datasets import KarateClub
 import math 
 
 """
@@ -86,6 +84,39 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
     
     def get_layout_df(self):
         return self.df
+    
+    def process(self, 
+                num_configs : int, 
+                config_selection : str, 
+                max_configs : int, 
+                processed_paths : str,
+                ):
+        
+        processed_paths = processed_paths + f"/layout/{self.source}/{self.search}/"
+        os.makedirs(processed_paths, exist_ok = True) 
+
+        collator  = LayoutCollator(num_configs=num_configs, 
+                                   config_selection=config_selection, 
+                                   max_configs=max_configs,
+                                   )
+
+        dataset_graph_list = []
+        for idx in range(len(self.df)):
+            batch = collator([self.__getitem__(idx=idx)])
+
+            for graph in batch.to_data_list():
+                dataset_graph_list.append(graph)
+        
+        dataset_graphs = Batch.from_data_list(dataset_graph_list)
+
+        print(dataset_graphs)
+        torch.save(dataset_graphs, processed_paths + "_" + config_selection + "_" + str(num_configs) + "_" + str(max_configs) + ".pt")
+
+        dataset_graphs = torch.load(processed_paths + "_" + config_selection + "_" + str(num_configs) + "_" + str(max_configs) + ".pt")
+
+        print(dataset_graphs)
+        
+
 
     def __init__(self, 
                  data_dir : str,
@@ -130,6 +161,7 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
         config_runtime   | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (100040,)  
         node_splits      | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (1, 2)
         """        
+        print("idx: ", idx)
         layout_dict = self._layout_loader(self.df.paths[idx])
 
         layout_dict['config_runtime'] = F.normalize(layout_dict['config_runtime'].to(dtype=torch.float32), dim = -1)
@@ -163,12 +195,12 @@ class LayoutCollator:
 
     def __init__(self,
                 num_configs : int, 
-                random_config_selection: bool,
+                config_selection: bool,
                 max_configs : Optional[int],
                  ):
         self.num_configs = num_configs
         self.max_configs = max_configs
-        self.random_config_selection = random_config_selection
+        self.config_selection = config_selection
 
     def _delete_data_attributes(self, 
                                data : Data, 
@@ -194,15 +226,17 @@ class LayoutCollator:
 
         return zeros # (num_configs, num_nodes, CONFIG_FEAT)
 
-    def _determenistic_sampling(self, 
+    def _deterministic_sampling(self, 
                             config_runtime : torch.Tensor, 
                             num_configs : int,
+                            config_selection : str,
                             ) -> torch.Tensor:
         
         # Sort the tensor and get the indices
         sorted_runtimes, sorted_indices = torch.sort(config_runtime)
         # Get the first 8 indices after sorting
-        first_indices = sorted_indices[:num_configs]
+        if config_selection == 'deterministic-min':
+            first_indices = sorted_indices[:num_configs]
 
         return first_indices
 
@@ -258,11 +292,15 @@ class LayoutCollator:
             total_configs = min(total_configs, self.max_configs)
 
         # return `total_configs` of random config_runtimes
-        if self.random_config_selection:
+        if self.config_selection in ['random']:
             return torch.from_numpy(np.random.choice(total_configs, self.num_configs, replace=False))
-        
-        # return a number of samples based on a hitogram probability 
-        return self._determenistic_sampling(config_runtime=config_runtime, num_configs=self.num_configs)
+        elif self.config_selection in ['deterministic-min']:
+            return self._deterministic_sampling(config_runtime=config_runtime, 
+                                                num_configs=total_configs,
+                                                config_selection=self.config_selection,
+                                                )
+        else:
+            RuntimeError(f"Unknown Config Selection Method! : {self.config_selection}")
     
     def __call__(self, batch : List, selected_configs:List[int]=None):
         """
@@ -274,7 +312,6 @@ class LayoutCollator:
         config_runtime   | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (num_configs,)
         node_splits      | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (1, 2)
         """    
-
         assert len(batch) == 1, \
             "Due to limited GPU memory, currently we only support batch size of 1!"
         
@@ -397,8 +434,15 @@ if __name__ == '__main__':
                                         search='random', 
                                         source='xla',
                                         )
-    dataloader = DataLoader(dataset, collate_fn=LayoutCollator(num_configs=32, random_config_selection=False, max_configs=32), num_workers=1, batch_size=1, shuffle=True)
+    
+    dataset.process(num_configs=32, 
+                    config_selection='deterministic-min', 
+                    max_configs=32, 
+                    processed_paths='/home/cc/tpugraph/datasets/TPUGraphs/processed',
+                    )
 
-    for batch in dataloader:
-        print(batch.y, batch.selected_config)
-        print("--------------------------------------------------")
+    # dataloader = DataLoader(dataset, collate_fn=LayoutCollator(num_configs=32, random_config_selection=False, max_configs=32), num_workers=1, batch_size=1, shuffle=True)
+    # for batch in dataloader:
+    #     print(batch.y, batch.selected_config)
+    #     print("--------------------------------------------------")
+
