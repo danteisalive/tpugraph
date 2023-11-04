@@ -450,8 +450,13 @@ class LayoutCollator:
 
         return Batch.from_data_list(batch_train_list)
 
+def layout_collator_method(batch_list : List, ):
 
-
+    # Convert Batch objects to lists of Data objects
+    combined_data_list = [graph for batch in batch_list for graph in batch.to_data_list()]
+    
+    # Create a new Batch from the combined list of Data objects
+    return Batch.from_data_list(combined_data_list)
 
 if __name__ == '__main__':
     dataset = TPULayoutDatasetFullGraph(data_dir="/home/cc/data/tpugraphs/npz", 
@@ -462,8 +467,8 @@ if __name__ == '__main__':
                                         num_configs=32, 
                                         config_selection='deterministic-min', 
                                         )
-    dataloader = DataLoader(dataset, collate_fn=lambda x : x, num_workers=1, batch_size=8, shuffle=True)
+    dataloader = DataLoader(dataset, collate_fn=layout_collator_method, num_workers=1, batch_size=8, shuffle=True)
     for batch in dataloader:
-        print(batch[0].x.shape, batch[0].y.shape, batch[0].selected_config.shape)
+        print(batch.x.shape, batch.y.shape, batch.selected_config.shape)
         print("--------------------------------------------------")
 
