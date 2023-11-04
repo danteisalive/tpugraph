@@ -85,37 +85,27 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
     def get_layout_df(self):
         return self.df
     
-    def process(self, 
-                num_configs : int, 
-                config_selection : str, 
-                max_configs : int, 
-                processed_paths : str,
-                ):
-        
-        processed_paths = processed_paths + f"/layout/{self.source}/{self.search}/"
-        os.makedirs(processed_paths, exist_ok = True) 
-
-        collator  = LayoutCollator(num_configs=num_configs, 
-                                   config_selection=config_selection, 
-                                   max_configs=max_configs,
-                                   )
+    def process(self,):
 
         dataset_graph_list = []
         for idx in range(len(self.df)):
-            batch = collator([self.__getitem__(idx=idx)])
+            batch = self.collator([self._preprocess(idx=idx)])
 
             for graph in batch.to_data_list():
                 dataset_graph_list.append(graph)
+
+            # if idx == 4:
+            #     break
         
         dataset_graphs = Batch.from_data_list(dataset_graph_list)
 
-        print(dataset_graphs)
-        torch.save(dataset_graphs, processed_paths + "_" + config_selection + "_" + str(num_configs) + "_" + str(max_configs) + ".pt")
+        print("Before Features Normalization: ", dataset_graphs)
+        dataset_graphs.x = self.feature_normalizer._apply_normalizer(dataset_graphs.x, *self.feature_normalizer._get_normalizer(dataset_graphs.x))
 
-        dataset_graphs = torch.load(processed_paths + "_" + config_selection + "_" + str(num_configs) + "_" + str(max_configs) + ".pt")
+        print("After Features Normalization: ", dataset_graphs)
+        torch.save(dataset_graphs, self.processed_paths + self.filename)
 
-        print(dataset_graphs)
-        
+        return dataset_graphs       
 
 
     def __init__(self, 
@@ -123,6 +113,9 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
                  split_names : List[str],
                  search : str,
                  source : str,
+                 num_configs : int, 
+                 config_selection : str, 
+                 processed_paths : str,
                 ):
         
         self.split_names = split_names     
@@ -130,6 +123,18 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
         self.source = source
         self.data_dir = data_dir
 
+        self.num_configs = num_configs
+        self.config_selection = config_selection
+
+        self.processed_paths = processed_paths + f"/layout/{self.source}/{self.search}/"
+        os.makedirs(processed_paths, exist_ok = True) 
+
+        self.filename = f"layout_{self.source}_{self.search}_{self.config_selection}_{self.num_configs}.pt"
+
+        self.feature_normalizer = NodeFeaturesNormalizer()
+        self.collator  = LayoutCollator(num_configs=self.num_configs, 
+                                        config_selection=self.config_selection, 
+                                        )
 
         df = self._generate_layout_df()
 
@@ -138,7 +143,16 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
         self.df = df.query(query).reset_index(drop=True)
         
         print(f"Dataset has {self.split_names} samples and in total has {self.__len__()} graphs")
-    
+
+        self.processed_dataset = None
+        if os.path.exists(self.processed_paths + self.filename):
+            print(f"{self.filename} already exists! Loading from existing processed dataset!")
+            self.processed_dataset = torch.load(self.processed_paths + self.filename)
+
+        else:
+            print(f"{self.filename} doesn't exists! Generating processed dataset! This may take a while! Go get a coffee or sth!")
+            self.processed_dataset = self.process()
+
     @property
     def num_sample_config(self) -> int:
         return self.num_configs
@@ -151,7 +165,7 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
         tile_dict = {k: torch.from_numpy(v) for k, v in tile_dict.items()}
         return tile_dict    
     
-    def __getitem__(self, idx:int,):
+    def _preprocess(self, idx:int,):
         """
         node_feat        | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (1696, 140)
         node_opcode      | Type: <class 'numpy.ndarray'> | Dtype: uint8    | Shape (1696,)
@@ -161,7 +175,7 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
         config_runtime   | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (100040,)  
         node_splits      | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (1, 2)
         """        
-        print("idx: ", idx)
+        
         layout_dict = self._layout_loader(self.df.paths[idx])
 
         layout_dict['config_runtime'] = F.normalize(layout_dict['config_runtime'].to(dtype=torch.float32), dim = -1)
@@ -181,7 +195,21 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
 
         return layout_dict
 
-            
+
+    def __getitem__(self, idx:int,):
+        """
+        node_feat        | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (1696, 140)
+        node_opcode      | Type: <class 'numpy.ndarray'> | Dtype: uint8    | Shape (1696,)
+        edge_index       | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (2697, 2)
+        node_config_feat | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (100040, 121, 18)
+        node_config_ids  | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (121,)
+        config_runtime   | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (100040,)  
+        node_splits      | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (1, 2)
+        """        
+        
+        assert self.processed_dataset is not None, ""
+        selected_graph = self.processed_dataset.to_data_list()[self.num_configs * idx : self.num_configs * (idx + 1)]
+        return Batch.from_data_list(selected_graph)
 
 @dataclass
 class LayoutCollator:
@@ -196,10 +224,8 @@ class LayoutCollator:
     def __init__(self,
                 num_configs : int, 
                 config_selection: bool,
-                max_configs : Optional[int],
                  ):
         self.num_configs = num_configs
-        self.max_configs = max_configs
         self.config_selection = config_selection
 
     def _delete_data_attributes(self, 
@@ -280,23 +306,21 @@ class LayoutCollator:
                         ) -> torch.Tensor:
         total_configs = config_runtime.shape[0]
 
-        # if there less than num_configs(default=32), then return a tensor of size 32 with replacement
-        if total_configs < self.num_configs:
-            return torch.from_numpy(np.random.choice(total_configs, self.num_configs, replace=True))
-        
         # return all configs if we want all the configs
         if self.num_configs == -1:
             return torch.from_numpy(np.arange(total_configs))
 
-        if self.max_configs is not None: # Default = None
-            total_configs = min(total_configs, self.max_configs)
+        # if there less than num_configs(default=32), then return a tensor of size 32 with replacement
+        if total_configs < self.num_configs:
+            return torch.from_numpy(np.random.choice(total_configs, self.num_configs, replace=True))
 
         # return `total_configs` of random config_runtimes
         if self.config_selection in ['random']:
             return torch.from_numpy(np.random.choice(total_configs, self.num_configs, replace=False))
+        
         elif self.config_selection in ['deterministic-min']:
             return self._deterministic_sampling(config_runtime=config_runtime, 
-                                                num_configs=total_configs,
+                                                num_configs=self.num_configs,
                                                 config_selection=self.config_selection,
                                                 )
         else:
@@ -433,16 +457,12 @@ if __name__ == '__main__':
                                         split_names=['train', 'valid'], 
                                         search='random', 
                                         source='xla',
+                                        processed_paths='/home/cc/tpugraph/datasets/TPUGraphs/processed',
+                                        num_configs=32, 
+                                        config_selection='deterministic-min', 
                                         )
-    
-    dataset.process(num_configs=32, 
-                    config_selection='deterministic-min', 
-                    max_configs=32, 
-                    processed_paths='/home/cc/tpugraph/datasets/TPUGraphs/processed',
-                    )
-
-    # dataloader = DataLoader(dataset, collate_fn=LayoutCollator(num_configs=32, random_config_selection=False, max_configs=32), num_workers=1, batch_size=1, shuffle=True)
-    # for batch in dataloader:
-    #     print(batch.y, batch.selected_config)
-    #     print("--------------------------------------------------")
+    dataloader = DataLoader(dataset, collate_fn=lambda x : x, num_workers=1, batch_size=1, shuffle=True)
+    for batch in dataloader:
+        print(batch[0].x.shape, batch[0].y.shape, batch[0].selected_config.shape)
+        print("--------------------------------------------------")
 
