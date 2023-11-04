@@ -16,6 +16,7 @@ from torch.utils.data import  DataLoader
 import torch.nn.functional as F
 from torch_geometric.loader import NeighborLoader
 import math 
+import tqdm
 
 """
 Use case: 
@@ -85,7 +86,7 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
     def get_layout_df(self):
         return self.df
     
-    def process(self,):
+    def _process(self,):
 
         dataset_graph_list = []
         for idx in range(len(self.df)):
@@ -151,7 +152,7 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
 
         else:
             print(f"{self.filename} doesn't exists! Generating processed dataset! This may take a while! Go get a coffee or sth!")
-            self.processed_dataset = self.process()
+            self.processed_dataset = self._process()
 
     @property
     def num_sample_config(self) -> int:
@@ -461,7 +462,7 @@ if __name__ == '__main__':
                                         num_configs=32, 
                                         config_selection='deterministic-min', 
                                         )
-    dataloader = DataLoader(dataset, collate_fn=lambda x : x, num_workers=1, batch_size=1, shuffle=True)
+    dataloader = DataLoader(dataset, collate_fn=lambda x : x, num_workers=1, batch_size=8, shuffle=True)
     for batch in dataloader:
         print(batch[0].x.shape, batch[0].y.shape, batch[0].selected_config.shape)
         print("--------------------------------------------------")
