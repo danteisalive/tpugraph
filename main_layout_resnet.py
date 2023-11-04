@@ -6,7 +6,7 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from loaders.tpu_layout_full_graphs import (TPULayoutDatasetFullGraph, LayoutCollator)
+from loaders.tpu_layout_full_graphs import (TPULayoutDatasetFullGraph, layout_collator_method)
 from torch.utils.data import  DataLoader, Subset
 import torch_geometric.transforms as T
 from torch_geometric.logging import init_wandb, log
@@ -66,10 +66,12 @@ class ResNetModel(nn.Module):
 
         self._prenet = MLP([hidden_dim] * mlp_layers, hidden_activation)
 
-        self._gc_layers = []
+        _gc_layers = []
         for _ in range(num_gnns):
-            self._gc_layers.append(MLP([hidden_dim] * mlp_layers, hidden_activation))
+            _gc_layers.append(MLP([hidden_dim] * mlp_layers, hidden_activation))
 
+        self._gc_layers = torch.nn.Sequential(*_gc_layers)
+        
         self._postnet = MLP([hidden_dim, 1], hidden_activation, use_bias=False)
 
     def forward(self, x):
@@ -134,22 +136,31 @@ if __name__ == '__main__':
 
 
     train_dataset = TPULayoutDatasetFullGraph(data_dir="/home/cc/data/tpugraphs/npz", 
-                                            split_names=['train'], 
-                                            search='random', 
-                                            source='xla', 
-                                            )
-    valid_dataset = TPULayoutDatasetFullGraph(data_dir="/home/cc/data/tpugraphs/npz", 
-                                            split_names=['valid'], 
-                                            search='random', 
-                                            source='xla', 
-                                            )
-    train_dataloader = DataLoader(train_dataset, collate_fn=LayoutCollator(num_configs=NUM_CONFIGS, config_selection='deterministic-min', max_configs=NUM_CONFIGS), num_workers=NUM_CPUS, batch_size=1, shuffle=True)
-    valid_dataloader = DataLoader(valid_dataset, collate_fn=LayoutCollator(num_configs=NUM_CONFIGS, config_selection='deterministic-min', max_configs=NUM_CONFIGS), num_workers=NUM_CPUS, batch_size=1)
+                                        split_names=['train','valid',], 
+                                        search='random', 
+                                        source='xla',
+                                        processed_paths='/home/cc/tpugraph/datasets/TPUGraphs/processed',
+                                        num_configs=NUM_CONFIGS, 
+                                        config_selection='deterministic-min', 
+                                        )
 
-    model = GAT(args.hidden_channels, args.out_channels, args.heads, num_configs=NUM_CONFIGS).to(device)
+    valid_dataset = TPULayoutDatasetFullGraph(data_dir="/home/cc/data/tpugraphs/npz", 
+                                        split_names=['valid',], 
+                                        search='random', 
+                                        source='xla',
+                                        processed_paths='/home/cc/tpugraph/datasets/TPUGraphs/processed',
+                                        num_configs=NUM_CONFIGS, 
+                                        config_selection='deterministic-min', 
+                                        )
+    
+    train_dataloader = DataLoader(train_dataset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=1, shuffle=True)
+    valid_dataloader = DataLoader(valid_dataset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=1)
+
+    model = ResNetModel(123,).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.005, weight_decay=5e-4)
 
     print(model)
+    assert(0)
 
     times = []
     best_val_acc = final_test_acc = 0

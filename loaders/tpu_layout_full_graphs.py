@@ -130,7 +130,8 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
         self.processed_paths = processed_paths + f"/layout/{self.source}/{self.search}/"
         os.makedirs(processed_paths, exist_ok = True) 
 
-        self.filename = f"layout_{self.source}_{self.search}_{self.config_selection}_{self.num_configs}.pt"
+        splitname_str = "_".join(self.split_names)
+        self.filename = f"layout_{self.source}_{self.search}_{self.config_selection}_{self.num_configs}_{splitname_str}.pt"
 
         self.feature_normalizer = NodeFeaturesNormalizer()
         self.collator  = LayoutCollator(num_configs=self.num_configs, 
