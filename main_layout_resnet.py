@@ -207,7 +207,7 @@ if __name__ == '__main__':
                                         )
 
     valid_dataset = TPULayoutDatasetFullGraph(data_dir="/home/cc/data/tpugraphs/npz", 
-                                        split_names=['valid',], 
+                                        split_names=['train','valid',], 
                                         search='random', 
                                         source='xla',
                                         processed_paths='/home/cc/tpugraph/datasets/TPUGraphs/processed',
@@ -225,6 +225,8 @@ if __name__ == '__main__':
 
     times = []
     train_loss = []
+    validation_loss = []
+    validation_acc = []
     best_val_acc = final_test_acc = 0
     for epoch in range(1, args.epochs + 1):
         
@@ -237,17 +239,25 @@ if __name__ == '__main__':
             times.append(time.time() - start)
 
         log(Epoch=epoch, TrainLoss=np.mean(train_loss),)
+        train_loss = []
 
-        # for batch in valid_dataloader:
-        #     batch = batch.to(device)
+        for batch in valid_dataloader:
+            batch = batch.to(device)
             
-        #     start = time.time()
-        #     val_acc, val_loss = validation(batch=batch, model=model,)
-        #     if val_acc > best_val_acc:
-        #         best_val_acc = val_acc
-        #     log(Epoch=epoch, ValLoss=val_loss, ValAcc=val_acc,)
-        #     times.append(time.time() - start)
-        
-        # model.kendall_tau.reset()
+            start = time.time()
+            val_acc, val_loss = validation(batch=batch, model=model,)
+            
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+
+            validation_loss.append(val_loss)
+            validation_acc.append(val_acc)
+            times.append(time.time() - start)
+
+        log(Epoch=epoch, ValLoss=np.mean(validation_loss), ValAcc=np.mean(validation_acc), BestValAcc=best_val_acc,)
+
+        validation_acc = []
+        validation_loss = []
+        model.kendall_tau.reset()
 
     print(f"Median time per epoch: {torch.tensor(times).median():.4f}s")

@@ -29,7 +29,7 @@ class KendallTau(tm.Metric):
         kts = []
         for idx in range(len(preds)):
             corr, _ = kendalltau(predicted_rankings[idx], actual_rankings[idx])
-            print(corr)
+            # print(corr)
             kts.append(corr)
 
         self.runtimes.append(torch.Tensor(kts))
