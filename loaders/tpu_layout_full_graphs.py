@@ -24,10 +24,7 @@ normalizer = NodeFeaturesNormalizer()
 normalized_matrix = normalizer._apply_normalizer(feature_matrix, *normalizer._get_normalizer(feature_matrix))
 """
 class NodeFeaturesNormalizer:
-    def __init__(self):
-        pass
 
-    
     def _get_normalizer(self,
                         feature_matrix : torch.Tensor, 
                        )-> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -61,160 +58,6 @@ class NodeFeaturesNormalizer:
         return normalized_features
 
 
-class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
-
-    NODE_OP_CODES = 120
-    NODE_FEATS = 140
-    CONFIG_FEATS = 18
-
-    PADDING_VALUE = NODE_OP_CODES + 1
-
-
-    def _generate_layout_df(self) -> pd.DataFrame:
-        layout_df = pd.DataFrame({'paths': [elem for elem in (Path(self.data_dir) / 'layout').rglob("*") if elem.is_file()]}).assign(
-            split=lambda df: df.paths.apply(lambda x: x.parent.name),
-            configuration=lambda df: df.paths.apply(lambda x: x.parent.parent.name),
-            extra=lambda df: df.paths.apply(lambda x: x.parent.parent.parent.name),
-            model_name=lambda df: df.paths.apply(lambda x: x.stem),
-            extension=lambda df: df.paths.apply(lambda x: x.suffix),
-            collection=lambda df: 'layout:' + df.extra + ':' + df.configuration,
-            ID=lambda df: df.collection + ':' + df.model_name ,
-            paths = lambda df: df.paths.apply(lambda x: str(x))
-        )
-        return layout_df
-    
-    def get_layout_df(self):
-        return self.df
-    
-    def _process(self,):
-
-        dataset_graph_list = []
-        for idx in range(len(self.df)):
-            batch = self.collator([self._preprocess(idx=idx)])
-
-            for graph in batch.to_data_list():
-                dataset_graph_list.append(graph)
-
-            # if idx == 4:
-            #     break
-        
-        dataset_graphs = Batch.from_data_list(dataset_graph_list)
-
-        print("Before Features Normalization: ", dataset_graphs)
-        dataset_graphs.x = self.feature_normalizer._apply_normalizer(dataset_graphs.x, *self.feature_normalizer._get_normalizer(dataset_graphs.x))
-
-        if hasattr(dataset_graphs, 'y'):
-            dataset_graphs.y = self.feature_normalizer._apply_normalizer(dataset_graphs.y, *self.feature_normalizer._get_normalizer(dataset_graphs.y)).squeeze(-1)
-
-        print("After Features Normalization: ", dataset_graphs)
-        torch.save(dataset_graphs, self.processed_paths + self.filename)
-
-        return dataset_graphs       
-
-
-    def __init__(self, 
-                 data_dir : str,
-                 split_names : List[str],
-                 search : str,
-                 source : str,
-                 num_configs : int, 
-                 config_selection : str, 
-                 processed_paths : str,
-                ):
-        
-        self.split_names = split_names     
-        self.search = search   
-        self.source = source
-        self.data_dir = data_dir
-
-        self.num_configs = num_configs
-        self.config_selection = config_selection
-
-        self.processed_paths = processed_paths + f"/layout/{self.source}/{self.search}/"
-        os.makedirs(processed_paths, exist_ok = True) 
-
-        splitname_str = "_".join(self.split_names)
-        self.filename = f"layout_{self.source}_{self.search}_{self.config_selection}_{self.num_configs}_{splitname_str}.pt"
-
-        self.feature_normalizer = NodeFeaturesNormalizer()
-        self.collator  = LayoutCollator(num_configs=self.num_configs, 
-                                        config_selection=self.config_selection, 
-                                        )
-
-        df = self._generate_layout_df()
-
-        query = "(" + " | ".join([f"(split == '{split_name}')" for split_name in self.split_names ]) + ")"
-        query = query + f" & (configuration == '{self.search}') & (extra == '{self.source}')"
-        self.df = df.query(query).reset_index(drop=True)
-        
-        print(f"Dataset has {self.split_names} samples and in total has {self.__len__()} graphs")
-
-        self.processed_dataset = None
-        if os.path.exists(self.processed_paths + self.filename):
-            print(f"{self.filename} already exists! Loading from existing processed dataset!")
-            self.processed_dataset = torch.load(self.processed_paths + self.filename)
-
-        else:
-            print(f"{self.filename} doesn't exists! Generating processed dataset! This may take a while! Go get a coffee or sth!")
-            self.processed_dataset = self._process()
-
-    @property
-    def num_sample_config(self) -> int:
-        return self.num_configs
-        
-    def __len__(self) -> int:
-        return len(self.df)
-    
-    def _layout_loader(self, path):
-        tile_dict =  dict(np.load(path))
-        tile_dict = {k: torch.from_numpy(v) for k, v in tile_dict.items()}
-        return tile_dict    
-    
-    def _preprocess(self, idx:int,):
-        """
-        node_feat        | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (1696, 140)
-        node_opcode      | Type: <class 'numpy.ndarray'> | Dtype: uint8    | Shape (1696,)
-        edge_index       | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (2697, 2)
-        node_config_feat | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (100040, 121, 18)
-        node_config_ids  | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (121,)
-        config_runtime   | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (100040,)  
-        node_splits      | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (1, 2)
-        """        
-        
-        layout_dict = self._layout_loader(self.df.paths[idx])
-
-        # layout_dict['config_runtime'] = F.normalize(layout_dict['config_runtime'].to(dtype=torch.float32), dim = -1)
-
-        if "edge_index" not in layout_dict:
-            raise ValueError(f"Can't find edge_index in the dataset!")
-        
-        # if split_name == 'test, then we don't have runtimes
-        if 'test' not in self.split_names:
-            runtime = layout_dict["config_runtime"]
-            assert (runtime == 0).all().item() is False, "Loader Error: all emelents are 0!"
-            assert (runtime == 0).any().item() is False, "Loader Error: one emelent is 0!"
-        
-        # print("--------------------- Graph ----------------------")
-        # for k, v in layout_dict.items():
-        #     print(k,v.shape)
-
-        return layout_dict
-
-
-    def __getitem__(self, idx:int,):
-        """
-        node_feat        | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (1696, 140)
-        node_opcode      | Type: <class 'numpy.ndarray'> | Dtype: uint8    | Shape (1696,)
-        edge_index       | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (2697, 2)
-        node_config_feat | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (100040, 121, 18)
-        node_config_ids  | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (121,)
-        config_runtime   | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (100040,)  
-        node_splits      | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (1, 2)
-        """        
-        
-        assert self.processed_dataset is not None, ""
-        selected_graph = self.processed_dataset.to_data_list()[self.num_configs * idx : self.num_configs * (idx + 1)]
-        return Batch.from_data_list(selected_graph)
 
 @dataclass
 class LayoutCollator:
@@ -384,6 +227,7 @@ class LayoutCollator:
         train_mask = torch.zeros((num_nodes,), dtype=torch.bool)
         train_mask[node_config_ids] = True
 
+        graph_id = torch.Tensor([graph['graph_id']],).long()
         # there will be padding if number of sample config runtimes are different
         if self.targets:
             config_runtime = graph['config_runtime'][selected_configs]
@@ -401,6 +245,7 @@ class LayoutCollator:
             data = Data(edge_index=edge_index.contiguous(),                  # (2, UNK)
                             x=node_feat.contiguous(),                        # (num_nodes, num_selected_configs, CONFIG_FEAT + NODE_FEATS + 1)
                             train_mask=train_mask,                           # (num_nodes,)
+                            node_config_ids=node_config_ids,
                         )
             
         data.validate(raise_on_error=True)
@@ -421,6 +266,7 @@ class LayoutCollator:
         # print("--------------------- Batch ----------------------")
         batch_list = []
         for batch in loader:
+            # print(batch)
 
             # verify node features equivalance 
             for idx in range(batch.n_id.shape[0]):
@@ -431,18 +277,17 @@ class LayoutCollator:
                 assert torch.equal(batch.n_id[batch.edge_index.T[idx,:]], data.edge_index.T[batch.e_id[idx], :]), ""
 
             assert batch.is_directed(), ""
-            batch = self._delete_data_attributes(batch, ['train_mask', 'node_config_id', 'n_id', 'e_id', 'input_id'])
+            batch = self._delete_data_attributes(batch, ['train_mask', 'n_id', 'e_id', 'input_id'])
 
             # print(batch)
 
             batch_list.append(batch)
         
-
         batch_train_list = []
         for graph in batch_list:
-
             config_edge_index = graph.edge_index 
             num_configs = graph.x.shape[1]  # x.shape = (num_nodes, num_selected_configs, embedding_size)
+            node_config_ids = graph.node_config_ids
 
             for config_idx in range(num_configs):
 
@@ -450,17 +295,181 @@ class LayoutCollator:
                              
                 # test data
                 if hasattr(graph, 'y') is False:
-                    config_graph = Data(edge_index=config_edge_index, x=config_x)
+                    config_graph = Data(edge_index=config_edge_index, 
+                                        x=config_x, 
+                                        node_config_ids=node_config_ids,
+                                        graph_id=graph_id,
+                                        )
 
                 # train and valid data
                 else: 
                     config_y = graph.y[config_idx]       
                     selected_config = graph.selected_configs[config_idx]      
-                    config_graph = Data(edge_index=config_edge_index, x=config_x, y=config_y, selected_config=selected_config)
+                    config_graph = Data(edge_index=config_edge_index, 
+                                        x=config_x, 
+                                        y=config_y, 
+                                        selected_config=selected_config, 
+                                        node_config_ids=node_config_ids,
+                                        graph_id=graph_id,
+                                        )
                 
                 batch_train_list.append(config_graph)
 
         return Batch.from_data_list(batch_train_list)
+
+
+
+class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
+
+    NODE_OP_CODES = 120
+    NODE_FEATS = 140
+    CONFIG_FEATS = 18
+
+    PADDING_VALUE = NODE_OP_CODES + 1
+
+
+    def _generate_layout_df(self) -> pd.DataFrame:
+        layout_df = pd.DataFrame({'paths': [elem for elem in (Path(self.data_dir) / 'layout').rglob("*") if elem.is_file()]}).assign(
+            split=lambda df: df.paths.apply(lambda x: x.parent.name),
+            configuration=lambda df: df.paths.apply(lambda x: x.parent.parent.name),
+            extra=lambda df: df.paths.apply(lambda x: x.parent.parent.parent.name),
+            model_name=lambda df: df.paths.apply(lambda x: x.stem),
+            extension=lambda df: df.paths.apply(lambda x: x.suffix),
+            collection=lambda df: 'layout:' + df.extra + ':' + df.configuration,
+            ID=lambda df: df.collection + ':' + df.model_name ,
+            paths = lambda df: df.paths.apply(lambda x: str(x))
+        )
+        return layout_df
+    
+    def get_layout_df(self):
+        return self.df
+    
+    def _process(self,):
+
+        dataset_graph_list = []
+        for idx in range(len(self.df)):
+            batch = self.collator([self._preprocess(idx=idx)])
+
+            for graph in batch.to_data_list():
+                dataset_graph_list.append(graph)
+
+            # if idx == 3:
+            #     break
+        
+        dataset_graphs = Batch.from_data_list(dataset_graph_list)
+
+        print("Before Features Normalization: ", dataset_graphs)
+        dataset_graphs.x = self.feature_normalizer._apply_normalizer(dataset_graphs.x, *self.feature_normalizer._get_normalizer(dataset_graphs.x))
+
+        if hasattr(dataset_graphs, 'y'):
+            dataset_graphs.y = self.feature_normalizer._apply_normalizer(dataset_graphs.y, *self.feature_normalizer._get_normalizer(dataset_graphs.y)).squeeze(-1)
+
+        print("After Features Normalization: ", dataset_graphs)
+
+
+        dataset_graph_dict = {idx : [] for idx in range(len(self.df))}
+        dataset_graph_list = dataset_graphs.to_data_list()
+        for idx in range(len(dataset_graph_list)):
+            graph_id = dataset_graph_list[idx].graph_id.item()
+            dataset_graph_dict[graph_id].append(dataset_graph_list[idx])
+
+
+        torch.save(dataset_graph_dict, self.processed_paths + self.filename)
+
+        return dataset_graph_dict       
+
+
+    def __init__(self, 
+                 data_dir : str,
+                 split_names : List[str],
+                 search : str,
+                 source : str,
+                 num_configs : int, 
+                 config_selection : str, 
+                 processed_paths : str,
+                ):
+        
+        self.split_names = split_names     
+        self.search = search   
+        self.source = source
+        self.data_dir = data_dir
+
+        self.num_configs = num_configs
+        self.config_selection = config_selection
+
+        self.processed_paths = processed_paths + f"/layout/{self.source}/{self.search}/"
+        os.makedirs(processed_paths, exist_ok = True) 
+
+        splitname_str = "_".join(self.split_names)
+        self.filename = f"layout_{self.source}_{self.search}_{self.config_selection}_{self.num_configs}_{splitname_str}.pt"
+
+        self.feature_normalizer = NodeFeaturesNormalizer()
+        self.collator  = LayoutCollator(num_configs=self.num_configs, 
+                                        config_selection=self.config_selection, 
+                                        )
+
+        df = self._generate_layout_df()
+
+        query = "(" + " | ".join([f"(split == '{split_name}')" for split_name in self.split_names ]) + ")"
+        query = query + f" & (configuration == '{self.search}') & (extra == '{self.source}')"
+        self.df = df.query(query).reset_index(drop=True)
+        
+        print(f"Dataset has {self.split_names} samples and in total has {self.__len__()} graphs")
+
+        self.processed_dataset = None
+        if os.path.exists(self.processed_paths + self.filename):
+            print(f"{self.filename} already exists! Loading from existing processed dataset!")
+            self.processed_dataset = torch.load(self.processed_paths + self.filename)
+
+        else:
+            print(f"{self.filename} doesn't exists! Generating processed dataset! This may take a while! Go get a coffee or sth!")
+            self.processed_dataset = self._process()
+
+    @property
+    def num_sample_config(self) -> int:
+        return self.num_configs
+        
+    def __len__(self) -> int:
+        return len(self.df)
+    
+    def _layout_loader(self, path):
+        tile_dict =  dict(np.load(path))
+        tile_dict = {k: torch.from_numpy(v) for k, v in tile_dict.items()}
+        return tile_dict    
+    
+    def _preprocess(self, idx:int,):
+        """
+        node_feat        | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (1696, 140)
+        node_opcode      | Type: <class 'numpy.ndarray'> | Dtype: uint8    | Shape (1696,)
+        edge_index       | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (2697, 2)
+        node_config_feat | Type: <class 'numpy.ndarray'> | Dtype: float32  | Shape (100040, 121, 18)
+        node_config_ids  | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (121,)
+        config_runtime   | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (100040,)  
+        node_splits      | Type: <class 'numpy.ndarray'> | Dtype: int64    | Shape (1, 2)
+        """        
+        
+        layout_dict = self._layout_loader(self.df.paths[idx])
+
+        if "edge_index" not in layout_dict:
+            raise ValueError(f"Can't find edge_index in the dataset!")
+        
+        # if split_name == 'test, then we don't have runtimes
+        if 'test' not in self.split_names:
+            runtime = layout_dict["config_runtime"]
+            assert (runtime == 0).all().item() is False, "Loader Error: all emelents are 0!"
+            assert (runtime == 0).any().item() is False, "Loader Error: one emelent is 0!"
+
+        layout_dict['graph_id'] = idx
+
+        return layout_dict
+
+
+    def __getitem__(self, idx:int,):
+            
+        assert self.processed_dataset is not None, ""
+
+        selected_graph = self.processed_dataset[idx]
+        return Batch.from_data_list(selected_graph)
 
 def layout_collator_method(batch_list : List, ):
 
@@ -479,8 +488,8 @@ if __name__ == '__main__':
                                         num_configs=32, 
                                         config_selection='min-rand-max', 
                                         )
-    dataloader = DataLoader(dataset, collate_fn=layout_collator_method, num_workers=1, batch_size=8, shuffle=True)
-    for batch in dataloader:
-        print(batch.x.shape, batch.y.shape, batch.selected_config.shape)
-        print("--------------------------------------------------")
+    # dataloader = DataLoader(dataset, collate_fn=layout_collator_method, num_workers=1, batch_size=8, shuffle=True)
+    # for batch in dataloader:
+    #     print(batch)
+    #     print("--------------------------------------------------")
 
