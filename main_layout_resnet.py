@@ -17,6 +17,7 @@ from network.multi_element_rank_loss import MultiElementRankLoss
 from network.ListMLE_loss import ListMLELoss
 from network.kendal_tau_metric import KendallTau
 from network.reduced_features_node_encoder import ReducedFeatureNodeEncoder
+from torch_geometric.nn import GCNConv
 
 NUM_CPUS = os.cpu_count() 
 NUM_CONFIGS = 32
@@ -53,37 +54,89 @@ def MLP(dims, hidden_activation, use_bias=True):
         
     return nn.Sequential(*layers)
 
-class ResNetModel(nn.Module):
+class ResidualGCN(nn.Module):
     def __init__(self, 
                  num_ops : int, 
                  hidden_dim : int = 32, 
                  mlp_layers : int = 2, 
-                 num_gnns : int = 2,
+                 out_channels : int = 32,
+                 in_channels : int = 32,
+                 hidden_channels : int = 32,
                  hidden_activation : str = 'leaky_relu', 
                  ):
-        super(ResNetModel, self).__init__()
+        super(ResidualGCN, self).__init__()
         self.op_embedding = nn.Embedding(num_embeddings=num_ops, embedding_dim=hidden_dim)
 
         self._prenet = MLP([hidden_dim] * mlp_layers, hidden_activation)
 
-        _gc_layers = []
-        for _ in range(num_gnns):
-            _gc_layers.append(MLP([hidden_dim] * mlp_layers, hidden_activation))
-
-        self._gc_layers = torch.nn.Sequential(*_gc_layers)
+        self.conv1 = GCNConv(hidden_dim, hidden_channels)
+        self.conv2 = GCNConv(hidden_channels, hidden_channels)
+        self.conv3 = GCNConv(hidden_channels, out_channels)
         
-        self._postnet = MLP([hidden_dim, 1], hidden_activation, use_bias=False)
+        # First layer residual connection
+        # If the in_channels != out_channels, we need a transformation for the residual connection
+        if hidden_dim != hidden_channels:
+            self.residual_layer_1 = torch.nn.Linear(hidden_dim, hidden_channels, bias=False)
+        else:
+            self.residual_layer_1 = torch.nn.Identity()
 
-    def forward(self, x):
+        # Second layer residual connection
+        self.residual_layer_2 = torch.nn.Identity()
+
+        # Third layer residual connection
+        # If the hidden_channels != out_channels, we need a transformation for the residual connection
+        if hidden_channels != out_channels:
+            self.residual_layer_3 = torch.nn.Linear(hidden_channels, out_channels, bias=False)
+        else:
+            self.residual_layer_3 = torch.nn.Identity()
+
+        self._postnet = MLP([out_channels, 1], hidden_activation, use_bias=False)
+
+    def forward(self, batch : Batch):
+
+        x = batch.x
+        edge_index = batch.edge_index
+
         x = self.op_embedding(x)
+        x = self._prenet(x)
 
-        # Pass through each sequential block
-        for sequential_block in self.sequential_blocks:
-            x = sequential_block(x)
+        identity_1 = self.residual_layer_1(x)
+        # First graph convolution layer with ReLU activation
+        x = self.conv1(x, edge_index)
+        x = F.leaky_relu(x)
+        x = x + identity_1  # Add residual connection (from the input of the first layer)
 
-        # Pass through the output block
-        x = self.output_block(x)
-        return x
+        identity_2 = self.residual_layer_2(x)
+        # Second graph convolution layer with ReLU activation and residual connection
+        x = self.conv2(x, edge_index)
+        x = F.leaky_relu(x) + identity_2  # Add residual connection (from the input of the first layer)
+
+        identity_3 = self.residual_layer_3(x)
+        # Third graph convolution layer with residual connection
+        x = self.conv3(x, edge_index)
+        x = F.leaky_relu(x) + identity_3  # Add residual connection (from the input of the first layer)
+
+        pred = self._postnet(x)
+
+        # print("Predictions: ", pred,)
+        # print("True Labels: ",true,)
+        # print("Selected Configs: ", batch.selected_config)
+
+        # calculate loss:
+        pred = pred.view(-1, self.num_configs)
+        true = batch.y
+
+        if hasattr(batch, 'selected_config'):
+            selected_configs = batch.selected_config.view(-1, self.num_configs)
+            true = true.view(-1, self.num_configs)
+            # print(pred.shape, true.shape)
+            loss = self.loss_fn(pred, true, selected_configs)
+            outputs = {'pred': pred, 'target': true, 'loss': loss}
+
+        else:
+            outputs = {'pred': pred}
+
+        return outputs
 
 
 def train(batch, model, optimizer, ):
@@ -156,7 +209,7 @@ if __name__ == '__main__':
     train_dataloader = DataLoader(train_dataset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=1, shuffle=True)
     valid_dataloader = DataLoader(valid_dataset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=1)
 
-    model = ResNetModel(123,).to(device)
+    model = ResidualGCN(123,).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.005, weight_decay=5e-4)
 
     print(model)

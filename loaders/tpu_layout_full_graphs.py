@@ -103,6 +103,9 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
         print("Before Features Normalization: ", dataset_graphs)
         dataset_graphs.x = self.feature_normalizer._apply_normalizer(dataset_graphs.x, *self.feature_normalizer._get_normalizer(dataset_graphs.x))
 
+        if hasattr(dataset_graphs, 'y'):
+            dataset_graphs.y = self.feature_normalizer._apply_normalizer(dataset_graphs.y, *self.feature_normalizer._get_normalizer(dataset_graphs.y)).squeeze(-1)
+
         print("After Features Normalization: ", dataset_graphs)
         torch.save(dataset_graphs, self.processed_paths + self.filename)
 
@@ -180,7 +183,7 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
         
         layout_dict = self._layout_loader(self.df.paths[idx])
 
-        layout_dict['config_runtime'] = F.normalize(layout_dict['config_runtime'].to(dtype=torch.float32), dim = -1)
+        # layout_dict['config_runtime'] = F.normalize(layout_dict['config_runtime'].to(dtype=torch.float32), dim = -1)
 
         if "edge_index" not in layout_dict:
             raise ValueError(f"Can't find edge_index in the dataset!")
@@ -264,9 +267,18 @@ class LayoutCollator:
         sorted_runtimes, sorted_indices = torch.sort(config_runtime)
         # Get the first 8 indices after sorting
         if config_selection == 'deterministic-min':
-            first_indices = sorted_indices[:num_configs]
+            selected_indices = sorted_indices[:num_configs]
 
-        return first_indices
+        elif config_selection == 'min-rand-max':
+            third = num_configs // 3
+            selected_indices = torch.cat([
+                    sorted_indices[:third],  # Good configs.
+                    sorted_indices[-third:],  # Bad configs.
+                    torch.tensor(np.random.choice(sorted_indices[third:-third], third, replace=False))
+                ], dim=0)
+        
+
+        return selected_indices
 
     def _bin_sampling_configs(self, 
                             config_runtime : torch.Tensor, 
@@ -320,7 +332,7 @@ class LayoutCollator:
         if self.config_selection in ['random']:
             return torch.from_numpy(np.random.choice(total_configs, self.num_configs, replace=False))
         
-        elif self.config_selection in ['deterministic-min']:
+        elif self.config_selection in ['deterministic-min', 'min-rand-max',]:
             return self._deterministic_sampling(config_runtime=config_runtime, 
                                                 num_configs=self.num_configs,
                                                 config_selection=self.config_selection,
@@ -367,9 +379,6 @@ class LayoutCollator:
         node_feat = node_feat.transpose(0,1) # (num_nodes, num_selected_configs, CONFIG_FEAT + NODE_FEATS + 1)
         # print(node_feat.shape)
 
-        # node_feat = node_feat.reshape(num_nodes, -1) # (num_nodes, num_selected_configs * (CONFIG_FEAT + NODE_FEATS + 1) )
-        # print(node_feat.shape)
-
         edge_index = graph['edge_index'].flip(dims=[1]).T
             
         train_mask = torch.zeros((num_nodes,), dtype=torch.bool)
@@ -381,8 +390,10 @@ class LayoutCollator:
             data = Data(edge_index=edge_index.contiguous(),                                     # (2, UNK)
                             x=node_feat.contiguous(),                                           # (num_nodes, num_selected_configs, CONFIG_FEAT + NODE_FEATS + 1)
                             y=config_runtime.contiguous(),                                      # (num_selected_configs,)
-                            selected_configs=selected_configs.contiguous(),   # (num_selected_configs,)
+                            selected_configs=selected_configs.contiguous(),                     # (num_selected_configs,)
                             train_mask=train_mask,                                              # (num_nodes,)
+                            node_config_ids=node_config_ids,                                    # (num_config_nodes)
+
                         )
             # print(f"{edge_index.shape=}, {edge_index.dtype=}, {node_feat.shape=}, {node_feat.dtype=}, {node_opcode.shape=}, {node_opcode.dtype=}, {node_config_feat.shape=}, {node_config_feat.dtype=}, {config_runtime.shape=}, {config_runtime.dtype=}")
                 
@@ -466,7 +477,7 @@ if __name__ == '__main__':
                                         source='xla',
                                         processed_paths='/home/cc/tpugraph/datasets/TPUGraphs/processed',
                                         num_configs=32, 
-                                        config_selection='deterministic-min', 
+                                        config_selection='min-rand-max', 
                                         )
     dataloader = DataLoader(dataset, collate_fn=layout_collator_method, num_workers=1, batch_size=8, shuffle=True)
     for batch in dataloader:
