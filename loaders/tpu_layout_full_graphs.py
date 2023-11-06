@@ -488,8 +488,8 @@ if __name__ == '__main__':
                                         num_configs=32, 
                                         config_selection='min-rand-max', 
                                         )
-    # dataloader = DataLoader(dataset, collate_fn=layout_collator_method, num_workers=1, batch_size=8, shuffle=True)
-    # for batch in dataloader:
-    #     print(batch)
-    #     print("--------------------------------------------------")
+    dataloader = DataLoader(dataset, collate_fn=layout_collator_method, num_workers=1, batch_size=8, shuffle=True)
+    for batch in dataloader:
+        print(batch)
+        print("--------------------------------------------------")
 
