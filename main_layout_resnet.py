@@ -22,26 +22,30 @@ from torch_geometric.nn import GCNConv
 NUM_CPUS = os.cpu_count() 
 NUM_CONFIGS = 32
 
+def get_activation(hidden_activation : str):
+
+    if hidden_activation == 'relu':
+        return nn.ReLU()
+    elif hidden_activation == 'leaky_relu':
+        return nn.LeakyReLU()
+    elif hidden_activation == 'sigmoid':
+        return nn.Sigmoid()
+    # Add more activation functions if needed
+    else:
+        raise ValueError(f"Unsupported activation: {hidden_activation}")
 
 def MLP(dims, hidden_activation, use_bias=True):
     """Helper function for multi-layer perceptron (MLP) in PyTorch."""
+    assert len(dims) >=2, ""
+
     layers = []
-    for i, dim in enumerate(dims):
+    for i in range(len(dims)-1):
         if i > 0:  # No activation before the first layer
-            if hidden_activation == 'relu':
-                layers.append(nn.ReLU())
-            elif hidden_activation == 'leaky_relu':
-                layers.append(nn.LeakyReLU())
-            elif hidden_activation == 'sigmoid':
-                layers.append(nn.Sigmoid())
-            # Add more activation functions if needed
-            else:
-                raise ValueError(f"Unsupported activation: {hidden_activation}")
-        
+            layers.append(get_activation(hidden_activation=hidden_activation))
         # Add Dense (Linear) layer
         layers.append(nn.Linear(
-            in_features=dims[i-1] if i > 0 else dims[i], 
-            out_features=dim, 
+            in_features=dims[i], 
+            out_features=dims[i+1], 
             bias=use_bias))
         
         # Apply L2 regularization (weight decay in PyTorch optimizer)
@@ -56,27 +60,26 @@ def MLP(dims, hidden_activation, use_bias=True):
 
 class ResidualGCN(nn.Module):
     def __init__(self, 
-                 num_ops : int, 
-                 hidden_dim : int = 32, 
-                 mlp_layers : int = 2, 
-                 out_channels : int = 32,
-                 in_channels : int = 32,
-                 hidden_channels : int = 32,
+                 num_feats : int, 
+                 prenet_hidden_dim : int , 
+                 gnn_hidden_dim : int,
+                 gnn_out_dim : int ,
                  hidden_activation : str = 'leaky_relu', 
                  ):
         super(ResidualGCN, self).__init__()
-        self.op_embedding = nn.Embedding(num_embeddings=num_ops, embedding_dim=hidden_dim)
+        # self.op_embedding = nn.Embedding(num_embeddings=num_ops, embedding_dim=hidden_dim)
 
-        self._prenet = MLP([hidden_dim] * mlp_layers, hidden_activation)
+        prenet_dims = [num_feats, 4 * prenet_hidden_dim, 2 * prenet_hidden_dim,]
+        self._prenet = MLP(prenet_dims, hidden_activation)
 
-        self.conv1 = GCNConv(hidden_dim, hidden_channels)
-        self.conv2 = GCNConv(hidden_channels, hidden_channels)
-        self.conv3 = GCNConv(hidden_channels, out_channels)
+        gnn_in_dim = prenet_dims[-1]
+        self.conv1 = GCNConv(gnn_in_dim, gnn_hidden_dim)
+        self.conv2 = GCNConv(gnn_hidden_dim, gnn_hidden_dim)
+        self.conv3 = GCNConv(gnn_hidden_dim, gnn_out_dim)
         
         # First layer residual connection
-        # If the in_channels != out_channels, we need a transformation for the residual connection
-        if hidden_dim != hidden_channels:
-            self.residual_layer_1 = torch.nn.Linear(hidden_dim, hidden_channels, bias=False)
+        if gnn_in_dim != gnn_hidden_dim:
+            self.residual_layer_1 = torch.nn.Linear(gnn_in_dim, gnn_hidden_dim, bias=False)
         else:
             self.residual_layer_1 = torch.nn.Identity()
 
@@ -84,57 +87,63 @@ class ResidualGCN(nn.Module):
         self.residual_layer_2 = torch.nn.Identity()
 
         # Third layer residual connection
-        # If the hidden_channels != out_channels, we need a transformation for the residual connection
-        if hidden_channels != out_channels:
-            self.residual_layer_3 = torch.nn.Linear(hidden_channels, out_channels, bias=False)
+        if gnn_hidden_dim != gnn_out_dim:
+            self.residual_layer_3 = torch.nn.Linear(gnn_hidden_dim, gnn_out_dim, bias=False)
         else:
             self.residual_layer_3 = torch.nn.Identity()
 
-        self._postnet = MLP([out_channels, 1], hidden_activation, use_bias=False)
+        self._postnet = MLP([gnn_out_dim, 1], hidden_activation, use_bias=False)
+
+        self.loss_fn = MultiElementRankLoss(margin=0.1, number_permutations=4)
+        # self.loss_fn = ListMLELoss()
+
+        self.kendall_tau = KendallTau()
 
     def forward(self, batch : Batch):
-
+        print(batch)
         x = batch.x
         edge_index = batch.edge_index
 
-        x = self.op_embedding(x)
-        x = self._prenet(x)
+        # x = self.op_embedding(x)
 
-        identity_1 = self.residual_layer_1(x)
-        # First graph convolution layer with ReLU activation
+        x = self._prenet(x)
+        x = F.leaky_relu(x)
+
+
+        identity = self.residual_layer_1(x)
         x = self.conv1(x, edge_index)
         x = F.leaky_relu(x)
-        x = x + identity_1  # Add residual connection (from the input of the first layer)
+        x = x + identity  # Add residual connection 
 
-        identity_2 = self.residual_layer_2(x)
-        # Second graph convolution layer with ReLU activation and residual connection
+        identity = self.residual_layer_2(x)
         x = self.conv2(x, edge_index)
-        x = F.leaky_relu(x) + identity_2  # Add residual connection (from the input of the first layer)
+        x = F.leaky_relu(x) + identity  # Add residual connection 
 
-        identity_3 = self.residual_layer_3(x)
-        # Third graph convolution layer with residual connection
+        identity = self.residual_layer_3(x)
         x = self.conv3(x, edge_index)
-        x = F.leaky_relu(x) + identity_3  # Add residual connection (from the input of the first layer)
+        x = F.leaky_relu(x) + identity  # Add residual connection 
+
+        x = global_mean_pool(x, batch.batch) + global_max_pool(x, batch.batch)
+
 
         pred = self._postnet(x)
-
-        # print("Predictions: ", pred,)
-        # print("True Labels: ",true,)
-        # print("Selected Configs: ", batch.selected_config)
-
-        # calculate loss:
-        pred = pred.view(-1, self.num_configs)
         true = batch.y
 
+        
+        num_configs = batch.graph_id.shape[0]
+        
+        pred = pred.view(-1, num_configs)
+
         if hasattr(batch, 'selected_config'):
-            selected_configs = batch.selected_config.view(-1, self.num_configs)
-            true = true.view(-1, self.num_configs)
-            # print(pred.shape, true.shape)
+            selected_configs = batch.selected_config.view(-1, num_configs)
+            true = true.view(-1, num_configs)
+            # print(pred.shape, true.shape, batch.selected_config.shape)
             loss = self.loss_fn(pred, true, selected_configs)
             outputs = {'pred': pred, 'target': true, 'loss': loss}
 
         else:
             outputs = {'pred': pred}
+
 
         return outputs
 
@@ -194,7 +203,7 @@ if __name__ == '__main__':
                                         source='xla',
                                         processed_paths='/home/cc/tpugraph/datasets/TPUGraphs/processed',
                                         num_configs=NUM_CONFIGS, 
-                                        config_selection='deterministic-min', 
+                                        config_selection='min-rand-max', 
                                         )
 
     valid_dataset = TPULayoutDatasetFullGraph(data_dir="/home/cc/data/tpugraphs/npz", 
@@ -203,17 +212,16 @@ if __name__ == '__main__':
                                         source='xla',
                                         processed_paths='/home/cc/tpugraph/datasets/TPUGraphs/processed',
                                         num_configs=NUM_CONFIGS, 
-                                        config_selection='deterministic-min', 
+                                        config_selection='min-rand-max', 
                                         )
     
     train_dataloader = DataLoader(train_dataset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=1, shuffle=True)
     valid_dataloader = DataLoader(valid_dataset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=1)
 
-    model = ResidualGCN(123,).to(device)
+    model = ResidualGCN(num_feats=123, prenet_hidden_dim=32, gnn_hidden_dim=64, gnn_out_dim=64, ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.005, weight_decay=5e-4)
 
     print(model)
-    assert(0)
 
     times = []
     best_val_acc = final_test_acc = 0
