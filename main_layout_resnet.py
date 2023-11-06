@@ -1,8 +1,7 @@
 import argparse
-import os.path as osp
 import time
 import os
-
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,7 +9,7 @@ from loaders.tpu_layout_full_graphs import (TPULayoutDatasetFullGraph, layout_co
 from torch.utils.data import  DataLoader, Subset
 import torch_geometric.transforms as T
 from torch_geometric.logging import init_wandb, log
-from torch_geometric.nn import GATConv, global_mean_pool, global_max_pool
+from torch_geometric.nn import GATConv, global_mean_pool, global_max_pool, global_add_pool
 from torch_geometric.data import Data, Batch
 
 from network.multi_element_rank_loss import MultiElementRankLoss
@@ -21,6 +20,7 @@ from torch_geometric.nn import GCNConv
 
 NUM_CPUS = os.cpu_count() 
 NUM_CONFIGS = 32
+BATCH_SIZE = 8
 
 def get_activation(hidden_activation : str):
 
@@ -100,7 +100,7 @@ class ResidualGCN(nn.Module):
         self.kendall_tau = KendallTau()
 
     def forward(self, batch : Batch):
-        print(batch)
+
         x = batch.x
         edge_index = batch.edge_index
 
@@ -123,7 +123,7 @@ class ResidualGCN(nn.Module):
         x = self.conv3(x, edge_index)
         x = F.leaky_relu(x) + identity  # Add residual connection 
 
-        x = global_mean_pool(x, batch.batch) + global_max_pool(x, batch.batch)
+        x = global_mean_pool(x, batch.batch) + global_add_pool(x, batch.batch)
 
 
         pred = self._postnet(x)
@@ -215,8 +215,8 @@ if __name__ == '__main__':
                                         config_selection='min-rand-max', 
                                         )
     
-    train_dataloader = DataLoader(train_dataset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=1, shuffle=True)
-    valid_dataloader = DataLoader(valid_dataset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=1)
+    train_dataloader = DataLoader(train_dataset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=BATCH_SIZE, shuffle=True)
+    valid_dataloader = DataLoader(valid_dataset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=BATCH_SIZE)
 
     model = ResidualGCN(num_feats=123, prenet_hidden_dim=32, gnn_hidden_dim=64, gnn_out_dim=64, ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.005, weight_decay=5e-4)
@@ -224,6 +224,7 @@ if __name__ == '__main__':
     print(model)
 
     times = []
+    train_loss = []
     best_val_acc = final_test_acc = 0
     for epoch in range(1, args.epochs + 1):
         
@@ -231,10 +232,11 @@ if __name__ == '__main__':
             batch = batch.to(device)
             
             start = time.time()
-            train_loss = train(batch, model, optimizer,)
-            log(Epoch=epoch, TrainLoss=train_loss,)
+            train_loss.append(train(batch, model, optimizer,))
+            
             times.append(time.time() - start)
 
+        log(Epoch=epoch, TrainLoss=np.mean(train_loss),)
 
         # for batch in valid_dataloader:
         #     batch = batch.to(device)
