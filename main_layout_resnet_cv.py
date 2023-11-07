@@ -171,7 +171,7 @@ def reset_weights(model):
   '''
   for layer in model.children():
    if hasattr(layer, 'reset_parameters'):
-    print(f'Reset trainable parameters of layer = {layer}')
+    # print(f'Reset trainable parameters of layer = {layer}')
     layer.reset_parameters()
 
 if __name__ == '__main__':
@@ -207,8 +207,7 @@ if __name__ == '__main__':
     results = {}
     for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
         # Print
-        print(f'FOLD {fold}')
-        print('--------------------------------')
+        print(f'-------------------------------- FOLD {fold} --------------------------------')
 
         # Sample elements randomly from a given list of ids, no replacement.
         train_subset = Subset(dataset, train_idx)
@@ -228,34 +227,22 @@ if __name__ == '__main__':
         # Run the training loop for defined number of epochs
         for epoch in range(0, args.epochs):
 
-            print(f'Starting epoch {epoch+1}')
             start = time.time()
 
             current_loss = 0.0
-            # Iterate over the DataLoader for training data
+            train_loss = []
             for i, batch in enumerate(train_loader, 0):
                 batch = batch.to(device)
                 loss = train(batch, model, optimizer,)
 
-                current_loss += loss.item()
-                if i % 10 == 9:
-                    print('Loss after mini-batch %5d: %.3f' % (i + 1, current_loss / 10))
-                    current_loss = 0.0
-
-            # # Evaluate the model
-            # epoch_val_loss = []
-            # epoch_val_acc = []
-            # with torch.no_grad():
-            #     for batch in train_loader:
-            #         batch = batch.to(device)
-            #         loss = validation(batch=batch, model=model,)
-            #         epoch_val_loss.append(loss)
-
-            # val_acc = model.kendall_tau.compute()
-            # model.kendall_tau.reset()
+                train_loss.append(loss.item())
+                # current_loss += loss.item()
+                # if i % 10 == 9:
+                #     print('Loss after mini-batch %5d: %.3f' % (i + 1, current_loss / 10))
+                #     current_loss = 0.0
             
-            # log(Epoch=epoch, TrainLoss=np.mean(epoch_train_loss), ValLoss=np.mean(epoch_val_loss), TrainAcc=train_acc, ValAcc=val_acc,)
-            
+            log(Epoch=epoch+1, TrainLoss=np.mean(train_loss),)
+
             times.append(time.time() - start)
 
         print(f"Training process has finished. Median time per epoch: {torch.tensor(times).median():.4f}s")
@@ -269,7 +256,7 @@ if __name__ == '__main__':
         print('Starting testing')
 
         # Evaluationfor this fold
-        correct, total = 0, 0
+        test_acc = []
         with torch.no_grad():
             for i, batch in enumerate(test_loader, 0):
                 batch = batch.to(device)
@@ -279,10 +266,11 @@ if __name__ == '__main__':
                 acc = model.kendall_tau.compute()
                 model.kendall_tau.reset()
 
-                # Print accuracy
-                print(f'Kendall tau for fold {fold}: {acc:.3f}')
-                print('--------------------------------')
-                results[fold] = acc
+                test_acc.append(acc)
+
+        log(Fold=fold, TestAcc=np.mean(test_acc),)
+        results[fold] = np.mean(test_acc)
+
 
     # Print fold results
     print(f'K-FOLD CROSS VALIDATION RESULTS FOR {NUM_SPLITS} FOLDS')
