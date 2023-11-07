@@ -20,7 +20,7 @@ from torch_geometric.nn import GCNConv
 
 NUM_CPUS = os.cpu_count() 
 NUM_CONFIGS = 32
-BATCH_SIZE = 8
+BATCH_SIZE = 1
 NUM_SPLITS = 5
 
 def get_activation(hidden_activation : str):
@@ -150,30 +150,29 @@ class ResidualGCN(nn.Module):
 
 
 def train(batch, model, optimizer, ):
-
+    
+    model.train()
     optimizer.zero_grad()
     
     outputs = model(batch)
 
     loss = outputs['loss']
+
     loss.backward()
     optimizer.step()
 
-    return float(loss)
+    return loss
 
 
-def validation(batch, model, ):
-    
-    outputs = model(batch)
-
-    val_loss = outputs['loss']
-
-    model.kendall_tau.update(outputs['pred'], outputs['target'],)
-    
-    val_acc = model.kendall_tau.compute()
-    
-    return val_acc, val_loss
-
+def reset_weights(model):
+  '''
+    Try resetting model weights to avoid
+    weight leakage.
+  '''
+  for layer in model.children():
+   if hasattr(layer, 'reset_parameters'):
+    print(f'Reset trainable parameters of layer = {layer}')
+    layer.reset_parameters()
 
 if __name__ == '__main__':
 
@@ -205,70 +204,91 @@ if __name__ == '__main__':
     kf = KFold(n_splits=NUM_SPLITS)
 
     # Perform the K-Fold split
-    final_train_loss = []
-    final_valid_loss = []
-    final_acc = []
-    for fold, (train_idx, val_idx) in enumerate(kf.split(dataset)):
-        print(f"FOLD {fold}")
+    results = {}
+    for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
+        # Print
+        print(f'FOLD {fold}')
+        print('--------------------------------')
 
-        model = ResidualGCN(num_feats=123, prenet_hidden_dim=32, gnn_hidden_dim=64, gnn_out_dim=64, ).to(device)
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.005, weight_decay=5e-4)
-
-        # print(model)
-
-        # Split the dataset into training and validation
+        # Sample elements randomly from a given list of ids, no replacement.
         train_subset = Subset(dataset, train_idx)
-        val_subset = Subset(dataset, val_idx)
+        test_subset = Subset(dataset, test_idx)
         
         # Create data loaders for training and validation
         train_loader = DataLoader(train_subset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=BATCH_SIZE, shuffle=True)
-        val_loader = DataLoader(val_subset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=BATCH_SIZE,)
+        test_loader = DataLoader(test_subset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=BATCH_SIZE,)
+
+
+        model = ResidualGCN(num_feats=123, prenet_hidden_dim=32, gnn_hidden_dim=64, gnn_out_dim=64,).to(device)
+        model.apply(reset_weights)
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.005, weight_decay=5e-4)
+
 
         times = []
-        train_loss = []
-        validation_loss = []
-        validation_acc = []
-        best_val_acc = final_test_acc = 0
+        # Run the training loop for defined number of epochs
+        for epoch in range(0, args.epochs):
 
-        for epoch in range(1, args.epochs + 1):
-            
+            print(f'Starting epoch {epoch+1}')
             start = time.time()
 
-            # Train the model
-            model.train()
-            for batch in train_loader:
+            current_loss = 0.0
+            # Iterate over the DataLoader for training data
+            for i, batch in enumerate(train_loader, 0):
                 batch = batch.to(device)
+                loss = train(batch, model, optimizer,)
 
-                train_loss.append(train(batch, model, optimizer,))
-                
-                
-            # Evaluate the model
-            model.eval()
-            with torch.no_grad():
-                for batch in val_loader:
-                    batch = batch.to(device)
+                current_loss += loss.item()
+                if i % 10 == 9:
+                    print('Loss after mini-batch %5d: %.3f' % (i + 1, current_loss / 10))
+                    current_loss = 0.0
 
-                    val_acc, val_loss = validation(batch=batch, model=model,)
-                    validation_loss.append(val_loss)
-                    validation_acc.append(val_acc)
+            # # Evaluate the model
+            # epoch_val_loss = []
+            # epoch_val_acc = []
+            # with torch.no_grad():
+            #     for batch in train_loader:
+            #         batch = batch.to(device)
+            #         loss = validation(batch=batch, model=model,)
+            #         epoch_val_loss.append(loss)
 
+            # val_acc = model.kendall_tau.compute()
+            # model.kendall_tau.reset()
+            
+            # log(Epoch=epoch, TrainLoss=np.mean(epoch_train_loss), ValLoss=np.mean(epoch_val_loss), TrainAcc=train_acc, ValAcc=val_acc,)
             
             times.append(time.time() - start)
 
-            if np.mean(validation_acc) > best_val_acc:
-                best_val_acc = np.mean(validation_acc)
+        print(f"Training process has finished. Median time per epoch: {torch.tensor(times).median():.4f}s")
+        print('Saving trained model.')
+    
+        # Saving the model
+        save_path = f'./model-fold-{fold}.pth'
+        torch.save(model.state_dict(), save_path)
 
-            log(Epoch=epoch, MeanTrainLoss=np.mean(train_loss), MeanValLoss=np.mean(validation_loss), MeanValAcc=np.mean(validation_acc), BestValAcc=best_val_acc,)
-            
-        
-            train_loss = []
-            validation_acc = []
-            validation_loss = []
-            model.kendall_tau.reset()
+        # Print about testing
+        print('Starting testing')
 
-        final_train_loss.append()
-        final_valid_loss.append()
-        final_acc.append()
+        # Evaluationfor this fold
+        correct, total = 0, 0
+        with torch.no_grad():
+            for i, batch in enumerate(test_loader, 0):
+                batch = batch.to(device)
+                outputs = model(batch)
 
-        print(f"Median time per epoch: {torch.tensor(times).median():.4f}s")
-        
+                model.kendall_tau.update(outputs['pred'], outputs['target'],)
+                acc = model.kendall_tau.compute()
+                model.kendall_tau.reset()
+
+                # Print accuracy
+                print(f'Kendall tau for fold {fold}: {acc:.3f}')
+                print('--------------------------------')
+                results[fold] = acc
+
+    # Print fold results
+    print(f'K-FOLD CROSS VALIDATION RESULTS FOR {NUM_SPLITS} FOLDS')
+    print('--------------------------------')
+    sum = 0.0
+    for key, value in results.items():
+        print(f'Fold {key}: {value} %')
+        sum += value
+    print(f'Average: {sum/len(results.items())} %')
