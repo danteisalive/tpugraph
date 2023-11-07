@@ -20,7 +20,6 @@ from torch_geometric.nn import GCNConv
 
 NUM_CPUS = os.cpu_count() 
 NUM_CONFIGS = 32
-BATCH_SIZE = 1
 NUM_SPLITS = 5
 
 def get_activation(hidden_activation : str):
@@ -178,17 +177,16 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, default='TPU')
-    parser.add_argument('--hidden_channels', type=int, default=256)
-    parser.add_argument('--out_channels', type=int, default=128)
-    parser.add_argument('--heads', type=int, default=8)
     parser.add_argument('--lr', type=float, default=0.005)
     parser.add_argument('--epochs', type=int, default=200)
-    parser.add_argument('--wandb', action='store_true', help='Track experiment')
+    parser.add_argument('--max-configs', type=int, default=1000)
+    parser.add_argument('--num-configs', type=int, default=32)
+    parser.add_argument('--batch-size', type=int, default=1)
+    parser.add_argument('--save-model', action='store_true', help='Save Trained Models')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    init_wandb(name=f'GCN-{args.dataset}', heads=args.heads, epochs=args.epochs,
-            hidden_channels=args.hidden_channels, lr=args.lr, device=device)
+
 
 
     dataset = TPULayoutDatasetFullGraph(data_dir="/home/cc/data/tpugraphs/npz", 
@@ -214,8 +212,8 @@ if __name__ == '__main__':
         test_subset = Subset(dataset, test_idx)
         
         # Create data loaders for training and validation
-        train_loader = DataLoader(train_subset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=BATCH_SIZE, shuffle=True)
-        test_loader = DataLoader(test_subset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=BATCH_SIZE,)
+        train_loader = DataLoader(train_subset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=args.batch_size, shuffle=True)
+        test_loader = DataLoader(test_subset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=8,)
 
 
         model = ResidualGCN(num_feats=123, prenet_hidden_dim=32, gnn_hidden_dim=64, gnn_out_dim=64,).to(device)
@@ -246,30 +244,38 @@ if __name__ == '__main__':
             times.append(time.time() - start)
 
         print(f"Training process has finished. Median time per epoch: {torch.tensor(times).median():.4f}s")
-        print('Saving trained model.')
-    
-        # Saving the model
-        save_path = f'./model-fold-{fold}.pth'
-        torch.save(model.state_dict(), save_path)
+        
+        if args.save_model:
+            print('Saving trained model.')
+            save_path = f'./model-fold-{fold}.pth'
+            torch.save(model.state_dict(), save_path)
 
         # Print about testing
+
         print('Starting testing')
+        # Evaluationfor this fold
+        train_loader = DataLoader(train_subset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=8,)
+        with torch.no_grad():
+            for i, batch in enumerate(train_loader, 0):
+                batch = batch.to(device)
+                outputs = model(batch)
+                model.kendall_tau.update(outputs['pred'], outputs['target'],)
+                
+        train_acc = model.kendall_tau.compute()
+        model.kendall_tau.reset()
 
         # Evaluationfor this fold
-        test_acc = []
         with torch.no_grad():
             for i, batch in enumerate(test_loader, 0):
                 batch = batch.to(device)
                 outputs = model(batch)
-
                 model.kendall_tau.update(outputs['pred'], outputs['target'],)
-                acc = model.kendall_tau.compute()
-                model.kendall_tau.reset()
 
-                test_acc.append(acc)
+        test_acc = model.kendall_tau.compute()
+        model.kendall_tau.reset()
 
-        log(Fold=fold, TestAcc=np.mean(test_acc),)
-        results[fold] = np.mean(test_acc)
+        log(Fold=fold, TrainAcc=train_acc, TestAcc=test_acc,)
+        results[fold] = (train_acc, test_acc)
 
 
     # Print fold results
