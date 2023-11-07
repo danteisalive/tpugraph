@@ -11,7 +11,7 @@ import torch_geometric.transforms as T
 from torch_geometric.logging import init_wandb, log
 from torch_geometric.nn import GATConv, global_mean_pool, global_max_pool, global_add_pool
 from torch_geometric.data import Data, Batch
-
+from sklearn.model_selection import KFold
 from network.multi_element_rank_loss import MultiElementRankLoss
 from network.ListMLE_loss import ListMLELoss
 from network.kendal_tau_metric import KendallTau
@@ -21,6 +21,7 @@ from torch_geometric.nn import GCNConv
 NUM_CPUS = os.cpu_count() 
 NUM_CONFIGS = 32
 BATCH_SIZE = 8
+NUM_SPLITS = 5
 
 def get_activation(hidden_activation : str):
 
@@ -150,12 +151,9 @@ class ResidualGCN(nn.Module):
 
 def train(batch, model, optimizer, ):
 
-    model.train()
     optimizer.zero_grad()
     
-    # print("Train In:" , batch)
     outputs = model(batch)
-    # print("Train Out:" , outputs['pred'].shape, outputs['target'].shape)
 
     loss = outputs['loss']
     loss.backward()
@@ -164,10 +162,7 @@ def train(batch, model, optimizer, ):
     return float(loss)
 
 
-@torch.no_grad()
 def validation(batch, model, ):
-    
-    model.eval()
     
     outputs = model(batch)
 
@@ -193,11 +188,11 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    init_wandb(name=f'GAT-{args.dataset}', heads=args.heads, epochs=args.epochs,
+    init_wandb(name=f'GCN-{args.dataset}', heads=args.heads, epochs=args.epochs,
             hidden_channels=args.hidden_channels, lr=args.lr, device=device)
 
 
-    train_dataset = TPULayoutDatasetFullGraph(data_dir="/home/cc/data/tpugraphs/npz", 
+    dataset = TPULayoutDatasetFullGraph(data_dir="/home/cc/data/tpugraphs/npz", 
                                         split_names=['train','valid',], 
                                         search='random', 
                                         source='xla',
@@ -206,57 +201,74 @@ if __name__ == '__main__':
                                         config_selection='min-rand-max', 
                                         )
 
-    valid_dataset = TPULayoutDatasetFullGraph(data_dir="/home/cc/data/tpugraphs/npz", 
-                                        split_names=['train','valid',], 
-                                        search='random', 
-                                        source='xla',
-                                        processed_paths='/home/cc/tpugraph/datasets/TPUGraphs/processed',
-                                        num_configs=NUM_CONFIGS, 
-                                        config_selection='min-rand-max', 
-                                        )
-    
-    train_dataloader = DataLoader(train_dataset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=BATCH_SIZE, shuffle=True)
-    valid_dataloader = DataLoader(valid_dataset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=BATCH_SIZE)
+    # KFold cross-validator
+    kf = KFold(n_splits=NUM_SPLITS)
 
-    model = ResidualGCN(num_feats=123, prenet_hidden_dim=32, gnn_hidden_dim=64, gnn_out_dim=64, ).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.005, weight_decay=5e-4)
+    # Perform the K-Fold split
+    final_train_loss = []
+    final_valid_loss = []
+    final_acc = []
+    for fold, (train_idx, val_idx) in enumerate(kf.split(dataset)):
+        print(f"FOLD {fold}")
 
-    print(model)
+        model = ResidualGCN(num_feats=123, prenet_hidden_dim=32, gnn_hidden_dim=64, gnn_out_dim=64, ).to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.005, weight_decay=5e-4)
 
-    times = []
-    train_loss = []
-    validation_loss = []
-    validation_acc = []
-    best_val_acc = final_test_acc = 0
-    for epoch in range(1, args.epochs + 1):
+        # print(model)
+
+        # Split the dataset into training and validation
+        train_subset = Subset(dataset, train_idx)
+        val_subset = Subset(dataset, val_idx)
         
-        for batch in train_dataloader:
-            batch = batch.to(device)
-            
-            start = time.time()
-            train_loss.append(train(batch, model, optimizer,))
-            
-            times.append(time.time() - start)
+        # Create data loaders for training and validation
+        train_loader = DataLoader(train_subset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=BATCH_SIZE, shuffle=True)
+        val_loader = DataLoader(val_subset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=BATCH_SIZE,)
 
-
-        for batch in valid_dataloader:
-            batch = batch.to(device)
-            
-            start = time.time()
-            val_acc, val_loss = validation(batch=batch, model=model,)
-
-            validation_loss.append(val_loss)
-            validation_acc.append(val_acc)
-            times.append(time.time() - start)
-
-        if np.mean(validation_acc) > best_val_acc:
-            best_val_acc = np.mean(validation_acc)
-
-        log(Epoch=epoch, MeanTrainLoss=np.mean(train_loss), MeanValLoss=np.mean(validation_loss), MeanValAcc=np.mean(validation_acc), BestValAcc=best_val_acc,)
-       
+        times = []
         train_loss = []
-        validation_acc = []
         validation_loss = []
-        model.kendall_tau.reset()
+        validation_acc = []
+        best_val_acc = final_test_acc = 0
 
-    print(f"Median time per epoch: {torch.tensor(times).median():.4f}s")
+        for epoch in range(1, args.epochs + 1):
+            
+            start = time.time()
+
+            # Train the model
+            model.train()
+            for batch in train_loader:
+                batch = batch.to(device)
+
+                train_loss.append(train(batch, model, optimizer,))
+                
+                
+            # Evaluate the model
+            model.eval()
+            with torch.no_grad():
+                for batch in val_loader:
+                    batch = batch.to(device)
+
+                    val_acc, val_loss = validation(batch=batch, model=model,)
+                    validation_loss.append(val_loss)
+                    validation_acc.append(val_acc)
+
+            
+            times.append(time.time() - start)
+
+            if np.mean(validation_acc) > best_val_acc:
+                best_val_acc = np.mean(validation_acc)
+
+            log(Epoch=epoch, MeanTrainLoss=np.mean(train_loss), MeanValLoss=np.mean(validation_loss), MeanValAcc=np.mean(validation_acc), BestValAcc=best_val_acc,)
+            
+        
+            train_loss = []
+            validation_acc = []
+            validation_loss = []
+            model.kendall_tau.reset()
+
+        final_train_loss.append()
+        final_valid_loss.append()
+        final_acc.append()
+
+        print(f"Median time per epoch: {torch.tensor(times).median():.4f}s")
+        
