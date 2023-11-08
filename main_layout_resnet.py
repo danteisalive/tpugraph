@@ -123,7 +123,7 @@ class ResidualGCN(nn.Module):
         x = self.conv3(x, edge_index)
         x = F.leaky_relu(x) + identity  # Add residual connection 
 
-        x = global_mean_pool(x, batch.batch) + global_add_pool(x, batch.batch)
+        x = global_mean_pool(x, batch.batch) + global_max_pool(x, batch.batch)
 
 
         pred = self._postnet(x)
@@ -242,7 +242,6 @@ if __name__ == '__main__':
         log(Epoch=epoch, MeanTrainLoss=np.mean(train_loss), MeanValLoss=np.mean(validation_loss), ValAcc=val_acc,)
        
         train_loss = []
-        # validation_acc = []
         validation_loss = []
         model.kendall_tau.reset()
 

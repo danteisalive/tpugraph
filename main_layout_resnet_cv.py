@@ -160,7 +160,7 @@ def train(batch, model, optimizer, ):
     loss.backward()
     optimizer.step()
 
-    return loss
+    return outputs
 
 
 def reset_weights(model):
@@ -178,7 +178,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, default='TPU')
     parser.add_argument('--lr', type=float, default=0.005)
-    parser.add_argument('--epochs', type=int, default=200)
+    parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--max-configs', type=int, default=1000)
     parser.add_argument('--num-configs', type=int, default=32)
     parser.add_argument('--batch-size', type=int, default=1)
@@ -231,9 +231,9 @@ if __name__ == '__main__':
             train_loss = []
             for i, batch in enumerate(train_loader, 0):
                 batch = batch.to(device)
-                loss = train(batch, model, optimizer,)
+                outputs = train(batch, model, optimizer,)
 
-                train_loss.append(loss.item())
+                train_loss.append(outputs['loss'].item())
                 # current_loss += loss.item()
                 # if i % 10 == 9:
                 #     print('Loss after mini-batch %5d: %.3f' % (i + 1, current_loss / 10))
@@ -250,12 +250,11 @@ if __name__ == '__main__':
             save_path = f'./model-fold-{fold}.pth'
             torch.save(model.state_dict(), save_path)
 
-        # Print about testing
+        print('Starting testing...')
 
-        print('Starting testing')
-        # Evaluationfor this fold
         train_loader = DataLoader(train_subset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=8,)
         with torch.no_grad():
+            model.eval()
             for i, batch in enumerate(train_loader, 0):
                 batch = batch.to(device)
                 outputs = model(batch)
@@ -264,8 +263,8 @@ if __name__ == '__main__':
         train_acc = model.kendall_tau.compute()
         model.kendall_tau.reset()
 
-        # Evaluationfor this fold
         with torch.no_grad():
+            model.eval()
             for i, batch in enumerate(test_loader, 0):
                 batch = batch.to(device)
                 outputs = model(batch)
@@ -284,5 +283,5 @@ if __name__ == '__main__':
     sum = 0.0
     for key, value in results.items():
         print(f'Fold {key}: {value} %')
-        sum += value
-    print(f'Average: {sum/len(results.items())} %')
+        sum += value[1]
+    print(f'Average Accuracy: {sum/len(results.items())} %')

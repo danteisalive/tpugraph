@@ -123,41 +123,6 @@ class LayoutCollator:
 
         return selected_indices
 
-    def _bin_sampling_configs(self, 
-                            config_runtime : torch.Tensor, 
-                            num_configs : int,
-                            ) -> torch.Tensor:
-        
-        # Step 1: Calculate the histogram
-        num_bins = num_configs
-        hist = torch.histc(config_runtime, bins=num_bins)
-        # print("HIST: ", config_runtime.shape,)
-        # Step 2: Determine the bin edges
-        min_val, max_val = config_runtime.min(), config_runtime.max()
-        bin_edges = torch.linspace(min_val, max_val, steps=num_bins+1)
-
-        # To store the selected indices
-        selected_indices = []
-
-        # Step 3: Iterate through each bin
-        for i in range(num_bins):
-            # Create a mask for the current bin
-            mask = (config_runtime >= bin_edges[i]) & (config_runtime < bin_edges[i+1])
-            
-            # Special case for the last bin to include the max_val
-            if i == num_bins - 1:
-                mask |= (config_runtime == max_val)
-                
-            # Get the indices of the elements in the current bin
-            indices_in_bin = torch.where(mask)[0]
-            
-            # Step 4: Randomly select one index from the indices_in_bin
-            if indices_in_bin.nelement() > 0:
-                selected_index = indices_in_bin[torch.randint(len(indices_in_bin), (1,))]
-                selected_indices.append(selected_index.item())
-
-        return torch.Tensor(selected_indices).long()
-
     def _select_configs(self, 
                         config_runtime: torch.Tensor,
                         ) -> torch.Tensor:
@@ -201,6 +166,7 @@ class LayoutCollator:
         if selected_configs is None:
             selected_configs = self._select_configs(graph['config_runtime'],)
 
+        assert len(selected_configs) == self.num_configs, "len(selected_configs) != self.num_configs. This will break everything!"
 
         num_nodes = graph['node_opcode'].shape[0]
         num_selected_configs = len(selected_configs)
