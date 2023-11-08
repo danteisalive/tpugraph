@@ -174,10 +174,8 @@ def validation(batch, model, ):
     val_loss = outputs['loss']
 
     model.kendall_tau.update(outputs['pred'], outputs['target'],)
-    
-    val_acc = model.kendall_tau.compute()
-    
-    return val_acc, val_loss
+        
+    return val_loss
 
 
 if __name__ == '__main__':
@@ -226,37 +224,28 @@ if __name__ == '__main__':
     times = []
     train_loss = []
     validation_loss = []
-    validation_acc = []
-    best_val_acc = final_test_acc = 0
     for epoch in range(1, args.epochs + 1):
         
+        start = time.time()
+
         for batch in train_dataloader:
             batch = batch.to(device)
-            
-            start = time.time()
             train_loss.append(train(batch, model, optimizer,))
-            
-            times.append(time.time() - start)
-
 
         for batch in valid_dataloader:
             batch = batch.to(device)
-            
-            start = time.time()
-            val_acc, val_loss = validation(batch=batch, model=model,)
-
+            val_loss = validation(batch=batch, model=model,)
             validation_loss.append(val_loss)
-            validation_acc.append(val_acc)
-            times.append(time.time() - start)
+        
+        val_acc = model.kendall_tau.compute()
 
-        if np.mean(validation_acc) > best_val_acc:
-            best_val_acc = np.mean(validation_acc)
-
-        log(Epoch=epoch, MeanTrainLoss=np.mean(train_loss), MeanValLoss=np.mean(validation_loss), MeanValAcc=np.mean(validation_acc), BestValAcc=best_val_acc,)
+        log(Epoch=epoch, MeanTrainLoss=np.mean(train_loss), MeanValLoss=np.mean(validation_loss), ValAcc=val_acc,)
        
         train_loss = []
-        validation_acc = []
+        # validation_acc = []
         validation_loss = []
         model.kendall_tau.reset()
+
+        times.append(time.time() - start)
 
     print(f"Median time per epoch: {torch.tensor(times).median():.4f}s")
