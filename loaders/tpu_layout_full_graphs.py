@@ -113,6 +113,8 @@ class LayoutCollator:
             selected_indices = sorted_indices[:num_configs]
 
         elif config_selection == 'min-rand-max':
+            assert num_configs % 3 == 0, "num_configs % 3 != 0"
+            
             third = num_configs // 3
             selected_indices = torch.cat([
                     sorted_indices[:third],  # Good configs.
