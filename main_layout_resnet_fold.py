@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from loaders.tpu_layout_full_graphs import (TPULayoutDatasetFullGraph, layout_collator_method)
-from torch.utils.data import  DataLoader, Subset, random_split
+from torch.utils.data import  DataLoader, Subset, random_split, ConcatDataset
 import torch_geometric.transforms as T
 from torch_geometric.logging import init_wandb, log
 from torch_geometric.nn import GATConv, global_mean_pool, global_max_pool, global_add_pool
@@ -21,6 +21,7 @@ from torch_geometric.nn import GCNConv
 NUM_CPUS = os.cpu_count() 
 NUM_CONFIGS = 33
 BATCH_SIZE = 8
+NUM_SPLITS = 5
 
 def get_activation(hidden_activation : str):
 
@@ -184,6 +185,36 @@ def validation(batch, model, ):
     return val_loss
 
 
+def k_fold_cross_validation(dataset, k=NUM_SPLITS, batch_size=BATCH_SIZE, shuffle_dataset=True):
+    dataset_size = len(dataset)
+    indices = list(range(dataset_size))
+
+    if shuffle_dataset:
+        torch.manual_seed(42)
+        torch.shuffle(indices)
+
+    # Calculate the size of each fold
+    fold_size = dataset_size // k
+    folds = []
+
+    # Create training/validation splits
+    for fold in range(k):
+        val_indices = indices[fold*fold_size : (fold+1)*fold_size]
+        train_indices = indices[:fold*fold_size] + indices[(fold+1)*fold_size:]
+        print("val_indices: ", val_indices, "train_indices: ",  train_indices)
+
+        train_subset = Subset(dataset, train_indices)
+        val_subset = Subset(dataset, val_indices)
+
+        # Use the subsets with the DataLoader to handle batching, shuffling, etc.
+        train_loader = DataLoader(train_subset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=batch_size, shuffle=True)
+        val_loader = DataLoader(val_subset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=batch_size, shuffle=False)
+
+        # Add the dataloaders of the current fold to the list
+        folds.append((train_loader, val_loader))
+
+    return folds
+
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
@@ -208,48 +239,41 @@ if __name__ == '__main__':
                                         config_selection='min-rand-max', 
                                         )
 
+    # Now, we perform cross-validation
+    for fold, (train_loader, val_loader) in enumerate(k_fold_cross_validation(dataset, k=NUM_SPLITS, batch_size=BATCH_SIZE, shuffle_dataset=False)):
+        print(f"Starting fold {fold+1}")
 
-    # Assume 'dataset' is an instance of torch.utils.data.Dataset
-    total_size = len(dataset)
-    val_size = int(0.2 * total_size)  # 20% for validation
-    train_size = total_size - val_size  # 80% for training
+        model = ResidualGCN(num_feats=123, prenet_hidden_dim=32, gnn_hidden_dim=64, gnn_out_dim=64,).to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.005, weight_decay=5e-4)
 
-    # Randomly split the dataset into training and validation datasets
-    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
-    
-    train_dataloader = DataLoader(train_dataset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=BATCH_SIZE, shuffle=True)
-    val_dataloader = DataLoader(val_dataset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=BATCH_SIZE, shuffle=False)
+        # print(model)
 
-    model = ResidualGCN(num_feats=123, prenet_hidden_dim=32, gnn_hidden_dim=64, gnn_out_dim=64,).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.005, weight_decay=5e-4)
-
-    print(model)
-
-    times = []
-    train_loss = []
-    validation_loss = []
-    for epoch in range(1, args.epochs + 1):
-        
-        start = time.time()
-
-        for batch in train_dataloader:
-            batch = batch.to(device)
-            train_loss.append(train(batch, model, optimizer,))
-
-        for batch in val_dataloader:
-            batch = batch.to(device)
-            val_loss = validation(batch=batch, model=model,)
-            validation_loss.append(val_loss)
-        
-        val_acc = model.kendall_tau.compute()
-        # model.kendall_tau.dump()
-
-        log(Epoch=epoch, MeanTrainLoss=np.mean(train_loss), MeanValLoss=np.mean(validation_loss), ValAcc=val_acc,)
-       
+        times = []
         train_loss = []
         validation_loss = []
-        model.kendall_tau.reset()
+        for epoch in range(1, args.epochs + 1):
+            
+            start = time.time()
 
-        times.append(time.time() - start)
+            for batch in train_loader:
+                batch = batch.to(device)
+                train_loss.append(train(batch, model, optimizer,))
 
-    print(f"Median time per epoch: {torch.tensor(times).median():.4f}s")
+            for batch in val_loader:
+                batch = batch.to(device)
+                val_loss = validation(batch=batch, model=model,)
+                validation_loss.append(val_loss)
+            
+            val_acc = model.kendall_tau.compute()
+            # model.kendall_tau.dump()
+
+            log(Epoch=epoch, MeanTrainLoss=np.mean(train_loss), MeanValLoss=np.mean(validation_loss), ValAcc=val_acc,)
+        
+            train_loss = []
+            validation_loss = []
+            model.kendall_tau.reset()
+
+            times.append(time.time() - start)
+
+        print(f"Median time per epoch: {torch.tensor(times).median():.4f}s")
+        print(f"-----------------------------------------------------------")
