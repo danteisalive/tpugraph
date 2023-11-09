@@ -1,17 +1,18 @@
 import argparse
 import time
 import os
+import random
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from loaders.tpu_layout_full_graphs import (TPULayoutDatasetFullGraph, layout_collator_method)
-from torch.utils.data import  DataLoader, Subset
+from torch.utils.data import  DataLoader, Subset, random_split, ConcatDataset
 import torch_geometric.transforms as T
 from torch_geometric.logging import init_wandb, log
 from torch_geometric.nn import GATConv, global_mean_pool, global_max_pool, global_add_pool
 from torch_geometric.data import Data, Batch
-from sklearn.model_selection import KFold
+
 from network.multi_element_rank_loss import MultiElementRankLoss
 from network.ListMLE_loss import ListMLELoss
 from network.kendal_tau_metric import KendallTau
@@ -19,7 +20,8 @@ from network.reduced_features_node_encoder import ReducedFeatureNodeEncoder
 from torch_geometric.nn import GCNConv
 
 NUM_CPUS = os.cpu_count() 
-NUM_CONFIGS = 32
+NUM_CONFIGS = 33
+BATCH_SIZE = 8
 NUM_SPLITS = 5
 
 def get_activation(hidden_activation : str):
@@ -65,10 +67,12 @@ class ResidualGCN(nn.Module):
                  gnn_hidden_dim : int,
                  gnn_out_dim : int ,
                  hidden_activation : str = 'leaky_relu', 
+                 pooling : str = 'max',
                  ):
         super(ResidualGCN, self).__init__()
         # self.op_embedding = nn.Embedding(num_embeddings=num_ops, embedding_dim=hidden_dim)
-
+        
+        self.pooling_type = pooling
         prenet_dims = [num_feats, 4 * prenet_hidden_dim, 2 * prenet_hidden_dim,]
         self._prenet = MLP(prenet_dims, hidden_activation)
 
@@ -123,23 +127,27 @@ class ResidualGCN(nn.Module):
         x = self.conv3(x, edge_index)
         x = F.leaky_relu(x) + identity  # Add residual connection 
 
-        x = global_mean_pool(x, batch.batch) + global_add_pool(x, batch.batch)
+        if self.pooling_type == 'mean+max':
+            x = global_mean_pool(x, batch.batch) + global_max_pool(x, batch.batch)
+        elif self.pooling_type == 'max':
+            x = global_max_pool(x, batch.batch)
+        else:
+            RuntimeError("Unknown pooling type!")
 
 
         pred = self._postnet(x)
         true = batch.y
 
-        
-        num_configs = batch.graph_id.shape[0]
+        num_configs = NUM_CONFIGS
         
         pred = pred.view(-1, num_configs)
 
         if hasattr(batch, 'selected_config'):
             selected_configs = batch.selected_config.view(-1, num_configs)
             true = true.view(-1, num_configs)
-            # print(pred.shape, true.shape, batch.selected_config.shape)
+            # print("MODEL: ", pred.shape, true.shape, batch.selected_config.shape)
             loss = self.loss_fn(pred, true, selected_configs)
-            outputs = {'pred': pred, 'target': true, 'loss': loss}
+            outputs = {'pred': pred, 'target': true, 'loss': loss, 'selected_configs': selected_configs}
 
         else:
             outputs = {'pred': pred}
@@ -149,18 +157,33 @@ class ResidualGCN(nn.Module):
 
 
 def train(batch, model, optimizer, ):
-    
+
     model.train()
     optimizer.zero_grad()
     
+    # print("Train In:" , batch)
     outputs = model(batch)
+    # print("Train Out:" , outputs['pred'].shape, outputs['target'].shape)
 
     loss = outputs['loss']
-
     loss.backward()
     optimizer.step()
 
-    return outputs
+    return float(loss)
+
+
+@torch.no_grad()
+def validation(batch, model, ):
+    
+    model.eval()
+    
+    outputs = model(batch)
+
+    val_loss = outputs['loss']
+
+    model.kendall_tau.update(outputs['pred'], outputs['target'], outputs['selected_configs'])
+        
+    return val_loss
 
 
 def reset_weights(model):
@@ -173,20 +196,49 @@ def reset_weights(model):
     # print(f'Reset trainable parameters of layer = {layer}')
     layer.reset_parameters()
 
+def k_fold_cross_validation(dataset, k=NUM_SPLITS, batch_size=BATCH_SIZE, shuffle_dataset=True):
+    dataset_size = len(dataset)
+    indices = list(range(dataset_size))
+
+    if shuffle_dataset:
+        random.seed(42)
+        random.shuffle(indices)
+
+    # Calculate the size of each fold
+    fold_size = dataset_size // k
+    folds = []
+
+    # Create training/validation splits
+    for fold in range(k):
+        val_indices = indices[fold*fold_size : (fold+1)*fold_size]
+        train_indices = indices[:fold*fold_size] + indices[(fold+1)*fold_size:]
+        print("val_indices: ", val_indices, "train_indices: ",  train_indices)
+
+        train_subset = Subset(dataset, train_indices)
+        val_subset = Subset(dataset, val_indices)
+
+        # Use the subsets with the DataLoader to handle batching, shuffling, etc.
+        train_loader = DataLoader(train_subset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=batch_size, shuffle=True)
+        val_loader = DataLoader(val_subset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=batch_size, shuffle=False)
+
+        # Add the dataloaders of the current fold to the list
+        folds.append((train_loader, val_loader))
+
+    return folds
+
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, default='TPU')
+    parser.add_argument('--num-configs', type=int, default=33)
     parser.add_argument('--lr', type=float, default=0.005)
-    parser.add_argument('--epochs', type=int, default=50)
-    parser.add_argument('--max-configs', type=int, default=1000)
-    parser.add_argument('--num-configs', type=int, default=32)
-    parser.add_argument('--batch-size', type=int, default=1)
-    parser.add_argument('--save-model', action='store_true', help='Save Trained Models')
+    parser.add_argument('--epochs', type=int, default=200)
+    parser.add_argument('--wandb', action='store_true', help='Track experiment')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
+    init_wandb(name=f'GCN-{args.dataset}', epochs=args.epochs,
+            num_configs=args.num_configs, lr=args.lr, device=device)
 
 
     dataset = TPULayoutDatasetFullGraph(data_dir="/home/cc/data/tpugraphs/npz", 
@@ -198,90 +250,51 @@ if __name__ == '__main__':
                                         config_selection='min-rand-max', 
                                         )
 
-    # KFold cross-validator
-    kf = KFold(n_splits=NUM_SPLITS)
-
-    # Perform the K-Fold split
-    results = {}
-    for fold, (train_idx, test_idx) in enumerate(kf.split(dataset)):
-        # Print
-        print(f'-------------------------------- FOLD {fold} --------------------------------')
-
-        # Sample elements randomly from a given list of ids, no replacement.
-        train_subset = Subset(dataset, train_idx)
-        test_subset = Subset(dataset, test_idx)
-        
-        # Create data loaders for training and validation
-        train_loader = DataLoader(train_subset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=args.batch_size, shuffle=True)
-        test_loader = DataLoader(test_subset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=8,)
-
+    fold_results = []
+    for fold, (train_loader, val_loader) in enumerate(k_fold_cross_validation(dataset, k=NUM_SPLITS, batch_size=BATCH_SIZE, shuffle_dataset=False)):
+        print(f"Starting fold {fold+1}")
 
         model = ResidualGCN(num_feats=123, prenet_hidden_dim=32, gnn_hidden_dim=64, gnn_out_dim=64,).to(device)
         model.apply(reset_weights)
         optimizer = torch.optim.Adam(model.parameters(), lr=0.005, weight_decay=5e-4)
 
+        # print(model)
 
         times = []
-        # Run the training loop for defined number of epochs
-        for epoch in range(0, args.epochs):
-
+        train_loss = []
+        for epoch in range(1, args.epochs + 1):
+            
             start = time.time()
 
-            current_loss = 0.0
-            train_loss = []
-            for i, batch in enumerate(train_loader, 0):
+            for batch in train_loader:
                 batch = batch.to(device)
-                outputs = train(batch, model, optimizer,)
+                train_loss.append(train(batch, model, optimizer,))
 
-                train_loss.append(outputs['loss'].item())
-                # current_loss += loss.item()
-                # if i % 10 == 9:
-                #     print('Loss after mini-batch %5d: %.3f' % (i + 1, current_loss / 10))
-                #     current_loss = 0.0
+            for batch in train_loader:
+                batch = batch.to(device)
+                validation(batch=batch, model=model,)
             
-            log(Epoch=epoch+1, TrainLoss=np.mean(train_loss),)
+            train_acc = model.kendall_tau.compute()
+            model.kendall_tau.reset()
+
+            log(Epoch=epoch, TrainLoss=np.mean(train_loss), TrainAcc=train_acc)
+
+            train_loss = []
 
             times.append(time.time() - start)
 
-        print(f"Training process has finished. Median time per epoch: {torch.tensor(times).median():.4f}s")
+        val_loss = []
+        for batch in val_loader:
+            batch = batch.to(device)
+            val_loss.append(validation(batch=batch, model=model,))
         
-        if args.save_model:
-            print('Saving trained model.')
-            save_path = f'./model-fold-{fold}.pth'
-            torch.save(model.state_dict(), save_path)
-
-        print('Starting testing...')
-
-        train_loader = DataLoader(train_subset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=8,)
-        with torch.no_grad():
-            model.eval()
-            for i, batch in enumerate(train_loader, 0):
-                batch = batch.to(device)
-                outputs = model(batch)
-                model.kendall_tau.update(outputs['pred'], outputs['target'],)
-                
-        train_acc = model.kendall_tau.compute()
+        val_acc = model.kendall_tau.compute()
         model.kendall_tau.reset()
+        # model.kendall_tau.dump()
+        fold_results.append(val_acc)
+        log(ValLoss=np.mean(val_loss), ValAcc=val_acc)
 
-        with torch.no_grad():
-            model.eval()
-            for i, batch in enumerate(test_loader, 0):
-                batch = batch.to(device)
-                outputs = model(batch)
-                model.kendall_tau.update(outputs['pred'], outputs['target'],)
+        print(f"Median time per epoch: {torch.tensor(times).median():.4f}s")
+        print(f"-----------------------------------------------------------")
 
-        test_acc = model.kendall_tau.compute()
-        model.kendall_tau.reset()
-
-        log(Fold=fold, TrainAcc=train_acc, TestAcc=test_acc,)
-        results[fold] = (train_acc, test_acc)
-
-
-    # Print fold results
-    print(f'K-FOLD CROSS VALIDATION RESULTS FOR {NUM_SPLITS} FOLDS')
-    print('--------------------------------')
-    sum = 0.0
-    for key, value in results.items():
-        print(f'Fold {key}: {value} %')
-        sum += value[1]
-    print(f'Average Accuracy: {sum/len(results.items())} %')
+    print(f"Cross Validation Accuracy Over {NUM_SPLITS} Splits: {np.mean(fold_results):.4f}")
