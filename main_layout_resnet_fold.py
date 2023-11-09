@@ -185,6 +185,16 @@ def validation(batch, model, ):
     return val_loss
 
 
+def reset_weights(model):
+  '''
+    Try resetting model weights to avoid
+    weight leakage.
+  '''
+  for layer in model.children():
+   if hasattr(layer, 'reset_parameters'):
+    # print(f'Reset trainable parameters of layer = {layer}')
+    layer.reset_parameters()
+
 def k_fold_cross_validation(dataset, k=NUM_SPLITS, batch_size=BATCH_SIZE, shuffle_dataset=True):
     dataset_size = len(dataset)
     indices = list(range(dataset_size))
@@ -244,6 +254,7 @@ if __name__ == '__main__':
         print(f"Starting fold {fold+1}")
 
         model = ResidualGCN(num_feats=123, prenet_hidden_dim=32, gnn_hidden_dim=64, gnn_out_dim=64,).to(device)
+        model.apply(reset_weights)
         optimizer = torch.optim.Adam(model.parameters(), lr=0.005, weight_decay=5e-4)
 
         # print(model)
