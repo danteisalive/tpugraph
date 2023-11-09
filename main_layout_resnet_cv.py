@@ -251,7 +251,7 @@ if __name__ == '__main__':
                                         )
 
     fold_results = []
-    for fold, (train_loader, val_loader) in enumerate(k_fold_cross_validation(dataset, k=NUM_SPLITS, batch_size=BATCH_SIZE, shuffle_dataset=False)):
+    for fold, (train_loader, val_loader) in enumerate(k_fold_cross_validation(dataset, k=NUM_SPLITS, batch_size=BATCH_SIZE, shuffle_dataset=True)):
         print(f"Starting fold {fold+1}")
 
         model = ResidualGCN(num_feats=123, prenet_hidden_dim=32, gnn_hidden_dim=64, gnn_out_dim=64,).to(device)
