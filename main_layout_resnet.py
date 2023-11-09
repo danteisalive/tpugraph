@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from loaders.tpu_layout_full_graphs import (TPULayoutDatasetFullGraph, layout_collator_method)
+from loaders.tpu_layout_neighbour_loader import (TPULayoutDatasetFullGraph, layout_collator_method)
 from torch.utils.data import  DataLoader, Subset
 import torch_geometric.transforms as T
 from torch_geometric.logging import init_wandb, log
