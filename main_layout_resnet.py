@@ -19,7 +19,7 @@ from network.reduced_features_node_encoder import ReducedFeatureNodeEncoder
 from torch_geometric.nn import GCNConv
 
 NUM_CPUS = os.cpu_count() 
-NUM_CONFIGS = 32
+NUM_CONFIGS = 33
 BATCH_SIZE = 8
 
 def get_activation(hidden_activation : str):
@@ -65,10 +65,12 @@ class ResidualGCN(nn.Module):
                  gnn_hidden_dim : int,
                  gnn_out_dim : int ,
                  hidden_activation : str = 'leaky_relu', 
+                 pooling : str = 'max',
                  ):
         super(ResidualGCN, self).__init__()
         # self.op_embedding = nn.Embedding(num_embeddings=num_ops, embedding_dim=hidden_dim)
-
+        
+        self.pooling_type = pooling
         prenet_dims = [num_feats, 4 * prenet_hidden_dim, 2 * prenet_hidden_dim,]
         self._prenet = MLP(prenet_dims, hidden_activation)
 
@@ -123,23 +125,27 @@ class ResidualGCN(nn.Module):
         x = self.conv3(x, edge_index)
         x = F.leaky_relu(x) + identity  # Add residual connection 
 
-        x = global_mean_pool(x, batch.batch) + global_max_pool(x, batch.batch)
+        if self.pooling_type == 'mean+max':
+            x = global_mean_pool(x, batch.batch) + global_max_pool(x, batch.batch)
+        elif self.pooling_type == 'max':
+            x = global_max_pool(x, batch.batch)
+        else:
+            RuntimeError("Unknown pooling type!")
 
 
         pred = self._postnet(x)
         true = batch.y
 
-        
-        num_configs = batch.graph_id.shape[0]
+        num_configs = NUM_CONFIGS
         
         pred = pred.view(-1, num_configs)
 
         if hasattr(batch, 'selected_config'):
             selected_configs = batch.selected_config.view(-1, num_configs)
             true = true.view(-1, num_configs)
-            # print(pred.shape, true.shape, batch.selected_config.shape)
+            # print("MODEL: ", pred.shape, true.shape, batch.selected_config.shape)
             loss = self.loss_fn(pred, true, selected_configs)
-            outputs = {'pred': pred, 'target': true, 'loss': loss}
+            outputs = {'pred': pred, 'target': true, 'loss': loss, 'selected_configs': selected_configs}
 
         else:
             outputs = {'pred': pred}
@@ -173,7 +179,7 @@ def validation(batch, model, ):
 
     val_loss = outputs['loss']
 
-    model.kendall_tau.update(outputs['pred'], outputs['target'],)
+    model.kendall_tau.update(outputs['pred'], outputs['target'], outputs['selected_configs'])
         
     return val_loss
 
@@ -182,17 +188,15 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, default='TPU')
-    parser.add_argument('--hidden_channels', type=int, default=256)
-    parser.add_argument('--out_channels', type=int, default=128)
-    parser.add_argument('--heads', type=int, default=8)
+    parser.add_argument('--num-configs', type=int, default=33)
     parser.add_argument('--lr', type=float, default=0.005)
     parser.add_argument('--epochs', type=int, default=200)
     parser.add_argument('--wandb', action='store_true', help='Track experiment')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    init_wandb(name=f'GAT-{args.dataset}', heads=args.heads, epochs=args.epochs,
-            hidden_channels=args.hidden_channels, lr=args.lr, device=device)
+    init_wandb(name=f'GCN-{args.dataset}', epochs=args.epochs,
+            num_configs=args.num_configs, lr=args.lr, device=device)
 
 
     train_dataset = TPULayoutDatasetFullGraph(data_dir="/home/cc/data/tpugraphs/npz", 
@@ -214,7 +218,7 @@ if __name__ == '__main__':
                                         )
     
     train_dataloader = DataLoader(train_dataset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=BATCH_SIZE, shuffle=True)
-    valid_dataloader = DataLoader(valid_dataset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=BATCH_SIZE)
+    valid_dataloader = DataLoader(valid_dataset, collate_fn=layout_collator_method, num_workers=NUM_CPUS, batch_size=8)
 
     model = ResidualGCN(num_feats=123, prenet_hidden_dim=32, gnn_hidden_dim=64, gnn_out_dim=64, ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.005, weight_decay=5e-4)
@@ -238,6 +242,7 @@ if __name__ == '__main__':
             validation_loss.append(val_loss)
         
         val_acc = model.kendall_tau.compute()
+        # model.kendall_tau.dump()
 
         log(Epoch=epoch, MeanTrainLoss=np.mean(train_loss), MeanValLoss=np.mean(validation_loss), ValAcc=val_acc,)
        
