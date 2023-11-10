@@ -100,55 +100,7 @@ class LayoutCollator:
 
         return zeros # (num_configs, num_nodes, CONFIG_FEAT)
 
-    def _deterministic_sampling(self, 
-                            config_runtime : torch.Tensor, 
-                            num_configs : int,
-                            config_selection : str,
-                            ) -> torch.Tensor:
-        
-        # Sort the tensor and get the indices
-        sorted_runtimes, sorted_indices = torch.sort(config_runtime)
-        # Get the first 8 indices after sorting
-        if config_selection == 'deterministic-min':
-            selected_indices = sorted_indices[:num_configs]
 
-        elif config_selection == 'min-rand-max':
-            assert num_configs % 3 == 0, "num_configs % 3 != 0"
-            
-            third = num_configs // 3
-            selected_indices = torch.cat([
-                    sorted_indices[:third],  # Good configs.
-                    sorted_indices[-third:],  # Bad configs.
-                    torch.tensor(np.random.choice(sorted_indices[third:-third], third, replace=False))
-                ], dim=0)
-        
-
-        return selected_indices
-
-    def _select_configs(self, 
-                        config_runtime: torch.Tensor,
-                        ) -> torch.Tensor:
-        total_configs = config_runtime.shape[0]
-
-        # return all configs if we want all the configs
-        if self.num_configs == -1:
-            return torch.from_numpy(np.arange(total_configs))
-
-        # if there less than num_configs(default=32), then return a tensor of size 32 with replacement
-        if total_configs < self.num_configs:
-            return torch.from_numpy(np.random.choice(total_configs, self.num_configs, replace=True))
-
-        # return `total_configs` of random config_runtimes
-        if self.config_selection in ['random']:
-            return torch.from_numpy(np.random.choice(total_configs, self.num_configs, replace=False))
-        
-        elif self.config_selection in ['deterministic-min', 'min-rand-max',]:
-            return self._deterministic_sampling(config_runtime=config_runtime, 
-                                                num_configs=self.num_configs,
-                                                config_selection=self.config_selection,
-                                                )
-        else:
-            RuntimeError(f"Unknown Config Selection Method! : {self.config_selection}")
     
     def __call__(self, batch : List, selected_configs:List[int]=None):
         """
@@ -171,15 +123,15 @@ class LayoutCollator:
         node_opcode = graph['node_opcode'].to(dtype=torch.float32).view(-1, 1)
         node_feat = graph['node_feat']
         node_feat = torch.cat([node_opcode, node_feat], dim=1) # (num_nodes, NODE_FEATS+1 (141))
-        print(node_feat.shape)
+        # print(node_feat.shape)
 
 
         node_config_ids = graph['node_config_ids'].long()
         node_config_feat = graph['node_config_feat']
         node_config_feat = self._transform_node_config_features(node_config_feat, node_config_ids, num_nodes)  # (num_configs, num_nodes, CONFIG_FEAT)
-        print(node_config_feat.shape)
+        # print(node_config_feat.shape)
         node_config_feat = node_config_feat.transpose(1,0)  # (num_nodes, num_configs, CONFIG_FEAT)
-        print(node_config_feat.shape)
+        # print(node_config_feat.shape)
 
 
         edge_index = graph['edge_index'].flip(dims=[1]).T
@@ -188,27 +140,23 @@ class LayoutCollator:
         train_mask[node_config_ids] = True
 
         graph_id = torch.Tensor([graph['graph_id']],).long()
-        # there will be padding if number of sample config runtimes are different
+
         if self.targets:
             config_runtime = graph['config_runtime']
-            data = Data(edge_index=edge_index.contiguous(),                                     # (2, UNK)
+
+        else:
+            config_runtime = torch.zeros((num_configs,), dtype=torch.float32, )
+
+
+        data = Data(edge_index=edge_index.contiguous(),                                         # (2, UNK)
                             node_feat=node_feat.contiguous(),                                   # (num_nodes, NODE_FEATS+1 (141))
-                            node_config_feat=node_config_feat.contiguous(),                     # (num_nodes, num_configs, CONFIG_FEAT)
+                            node_config_feat=node_config_feat.contiguous(),                     # (num_nodes, num_configs, CONFIG_FEAT (18))
                             train_mask=train_mask,                                              # (num_nodes,)
-                            node_config_ids=node_config_ids,                                    # (num_config_nodes)
+                            node_config_ids=node_config_ids.contiguous(),                       # (num_config_nodes)
                             y=config_runtime.contiguous(),                                      # (num_configs,)
                         )
-            print(f"{edge_index.shape=}, {node_feat.shape=},  {node_config_feat.shape=},  {node_config_ids.shape=},  {config_runtime.shape=},")
-                
-        else:
-            data = Data(edge_index=edge_index.contiguous(),                                     # (2, UNK)
-                            node_feat=node_feat.contiguous(),                                   # (num_nodes, NODE_FEATS+1 (141))
-                            node_config_feat=node_config_feat.contiguous(),                     # (num_nodes, num_configs, CONFIG_FEAT)
-                            train_mask=train_mask,                                              # (num_nodes,)
-                            node_config_ids=node_config_ids,                                    # (num_config_nodes)
-                        )
-            print(f"{edge_index.shape=}, {node_feat.shape=},  {node_config_feat.shape=},  {node_config_ids.shape=},")
-            
+        print(f"{edge_index.shape=}, {node_feat.shape=},  {node_config_feat.shape=},  {node_config_ids.shape=},  {config_runtime.shape=},")
+
         data.validate(raise_on_error=True)
         assert data.is_directed(), ""
         
@@ -258,15 +206,9 @@ class LayoutCollator:
             for config_idx in range(num_configs):
 
                 node_config_feat = graph.node_config_feat[:, config_idx, :]             # (num_nodes, (CONFIG_FEAT)(18))
-                config_x         = torch.cat([node_feat, node_config_feat], dim=1)      # (num_nodes, (NODE_FEATS + 1 + CONFIG_FEAT)(159))
-                print(config_x.shape)
-                
-                # train and valid data
-                if hasattr(graph, 'y'):                
-                    config_y = graph.y[config_idx]       
-                # test data
-                else:
-                    config_y = graph.y[config_idx]       
+                config_x = torch.cat([node_feat, node_config_feat], dim=1)      # (num_nodes, (NODE_FEATS + 1 + CONFIG_FEAT)(159))
+                # print(config_x.shape)
+                config_y = graph.y[config_idx]     
 
                 config_graph = Data(edge_index=config_edge_index, 
                                         x=config_x, 
@@ -280,8 +222,6 @@ class LayoutCollator:
 
                 batch_train_list.append(config_graph)
 
-        print(Batch.from_data_list(batch_train_list))
-        assert(0)
         return Batch.from_data_list(batch_train_list)
 
 
@@ -316,12 +256,20 @@ class TPULayoutDatasetFullConfigs(torch.utils.data.Dataset):
         dataset_graph_list = []
         for idx in range(len(self.df)):
             batch = self.collator([self._preprocess(idx=idx)])
+            print(batch)
 
             for graph in batch.to_data_list():
                 dataset_graph_list.append(graph)
 
+            # torch.save(batch, self.processed_paths + self.df.model_name[idx] + ".pt")
+
+            # loaded_batch = torch.load(self.processed_paths + self.df.model_name[idx] + ".pt")
+            # print(loaded_batch)
+
+
             # if idx == 3:
             #     break
+
         
         dataset_graphs = Batch.from_data_list(dataset_graph_list)
 
@@ -365,7 +313,7 @@ class TPULayoutDatasetFullConfigs(torch.utils.data.Dataset):
         self.config_selection = config_selection
 
         self.processed_paths = processed_paths + f"/layout/{self.source}/{self.search}/"
-        os.makedirs(processed_paths, exist_ok = True) 
+        os.makedirs(self.processed_paths, exist_ok = True) 
 
         splitname_str = "_".join(self.split_names)
         self.filename = f"layout_{self.source}_{self.search}_{self.config_selection}_{self.num_configs}_{splitname_str}.pt"
@@ -429,6 +377,57 @@ class TPULayoutDatasetFullConfigs(torch.utils.data.Dataset):
         layout_dict['graph_id'] = idx
 
         return layout_dict
+
+
+    def _deterministic_sampling(self, 
+                            config_runtime : torch.Tensor, 
+                            num_configs : int,
+                            config_selection : str,
+                            ) -> torch.Tensor:
+        
+        # Sort the tensor and get the indices
+        sorted_runtimes, sorted_indices = torch.sort(config_runtime)
+        # Get the first 8 indices after sorting
+        if config_selection == 'deterministic-min':
+            selected_indices = sorted_indices[:num_configs]
+
+        elif config_selection == 'min-rand-max':
+            assert num_configs % 3 == 0, "num_configs % 3 != 0"
+            
+            third = num_configs // 3
+            selected_indices = torch.cat([
+                    sorted_indices[:third],  # Good configs.
+                    sorted_indices[-third:],  # Bad configs.
+                    torch.tensor(np.random.choice(sorted_indices[third:-third], third, replace=False))
+                ], dim=0)
+        
+
+        return selected_indices
+
+    def _select_configs(self, 
+                        config_runtime: torch.Tensor,
+                        ) -> torch.Tensor:
+        total_configs = config_runtime.shape[0]
+
+        # return all configs if we want all the configs
+        if self.num_configs == -1:
+            return torch.from_numpy(np.arange(total_configs))
+
+        # if there less than num_configs(default=32), then return a tensor of size 32 with replacement
+        if total_configs < self.num_configs:
+            return torch.from_numpy(np.random.choice(total_configs, self.num_configs, replace=True))
+
+        # return `total_configs` of random config_runtimes
+        if self.config_selection in ['random']:
+            return torch.from_numpy(np.random.choice(total_configs, self.num_configs, replace=False))
+        
+        elif self.config_selection in ['deterministic-min', 'min-rand-max',]:
+            return self._deterministic_sampling(config_runtime=config_runtime, 
+                                                num_configs=self.num_configs,
+                                                config_selection=self.config_selection,
+                                                )
+        else:
+            RuntimeError(f"Unknown Config Selection Method! : {self.config_selection}")
 
 
     def __getitem__(self, idx:int,):
