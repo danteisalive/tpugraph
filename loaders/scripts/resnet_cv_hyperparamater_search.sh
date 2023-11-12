@@ -37,35 +37,3 @@ done
 
 
 
-
-
-
-
-for i in ${!ranges[@]}; do
-    range=${ranges[$i]}
-    max_num_batched_tokens=${max_batch_total_tokens_vals[$i]}
-    echo "range $range, max_num_batched_tokens $max_num_batched_tokens"
-
-    start_model_server $max_num_batched_tokens
-
-    pushd ..
-
-        results_directory=$(pwd)/$(basename "$0")_results/
-
-        if [ ! -d "$results_directory" ]; then
-            mkdir -p "$results_directory"
-
-        fi
-        ./benchmark_throughput.py \
-            --port $PORT \
-            --backend vLLM  \
-            --random_prompt_lens_mean 512 \
-            --random_prompt_lens_range 0 \
-            --random_prompt_count 30 \
-            --gen_random_prompts \
-            --fixed_max_tokens $range \
-            --results_filename ${results_directory}/vllm_test_${range}_$(date '+%Y-%m-%d_%H:%M:%S').log
-    popd
-    kill_model_server
-
-done
