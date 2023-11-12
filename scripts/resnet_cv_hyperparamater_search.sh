@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 
-global_pooling_types=("mean" "max" "mean-max")
-aggregation_types=("sum" "mean" "max")
-n_layers=(2 3 4)
-
+global_pooling_types=("mean" "max" "mean+max")
+aggregation_types=("mean")
+n_layers=(2)
 
 for nl in ${!n_layers[@]}; do
     for at in ${!aggregation_types[@]}; do
@@ -21,11 +20,11 @@ for nl in ${!n_layers[@]}; do
                 mkdir -p "$results_directory"
             fi
 
-            ./../main_layout_resnet_cv.py \
+            python ./../main_layout_resnet_cv.py \
                 --epochs 1 \
-                --num-confgis 33 \
-                --batch-size 8 \ 
-                --num-splits 5 \
+                --num-configs 33 \
+                --batch-size 8 \
+                --num-splits 2 \
                 --num-layers $n_layer \
                 --aggr-type $aggregation_type \
                 --global-pooling-type $global_pooling_type \

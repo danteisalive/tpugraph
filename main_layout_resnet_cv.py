@@ -131,6 +131,8 @@ class ResidualGCN(nn.Module):
             x = global_mean_pool(x, batch.batch) + global_max_pool(x, batch.batch)
         elif self.global_pooling_type == 'max':
             x = global_max_pool(x, batch.batch)
+        elif self.global_pooling_type == 'mean':
+            x = global_mean_pool(x, batch.batch)
         else:
             RuntimeError("Unknown pooling type!")
 
