@@ -5,6 +5,7 @@ import random
 import numpy as np
 import torch
 import torch.nn as nn
+import csv
 import torch.nn.functional as F
 from loaders.tpu_layout_neighbour_loader import (TPULayoutDatasetFullGraph, layout_collator_method)
 from torch.utils.data import  DataLoader, Subset, random_split, ConcatDataset
@@ -254,7 +255,7 @@ if __name__ == '__main__':
                                         config_selection='min-rand-max', 
                                         )
 
-    fold_results = []
+    fold_results = {}
     for fold, (train_loader, val_loader) in enumerate(k_fold_cross_validation(dataset, k=args.num_splits, batch_size=args.batch_size, shuffle_dataset=True)):
         print(f"Starting fold {fold+1}")
 
@@ -312,10 +313,35 @@ if __name__ == '__main__':
         model.kendall_tau.reset()
         # model.kendall_tau.dump()
 
-        fold_results.append(val_acc)
+        fold_results[fold] = (train_acc, val_acc)
         log(ValLoss=np.mean(val_loss), ValAcc=val_acc)
 
         print(f"Median time per epoch: {torch.tensor(times).median():.4f}s")
         print(f"-----------------------------------------------------------")
 
-    print(f"Cross Validation Accuracy Over {args.num_splits} Splits: {np.mean(fold_results):.4f}")
+    fold_train_acc = []
+    fold_val_acc = []
+    for k, v in fold_results.items():
+        fold_train_acc.append(v[0])
+        fold_val_acc.append(v[1])
+
+    print(f"Cross Validation Accuracy Over {args.num_splits} Splits: TrainAcc: {np.mean(fold_train_acc):.4f} ValAcc: {np.mean(fold_val_acc):.4f}")
+
+
+
+    result = {
+            'num-configs': args.num_configs,
+            'batch-size': args.batch_size,
+            'num-layers': args.num_layers, 
+            'node-pooling': args.aggr_type, 
+            'global-pooling': args.global_pooling_type,
+            'CV-val-acc.' : np.mean(fold_val_acc),
+            'CV-train-acc.' : np.mean(fold_train_acc),
+            }
+    
+    fieldnames = ['num-configs', 'batch-size', 'num-layers' ,'node-pooling', 'global-pooling', 'CV-val-acc.', 'CV-train-acc.', ]
+
+    with open(args.results_file_path, 'a', newline='') as file:
+        
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writerow(result)
