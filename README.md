@@ -3,6 +3,9 @@
 
 
 ```bash
+wget https://repo.anaconda.com/archive/Anaconda3-2023.09-0-Linux-x86_64.sh
+bash Anaconda3-2023.09-0-Linux-x86_64.sh
+conda config --set auto_activate_base false
 conda create --name llm4tpu-cpu python=3.11
 conda activate llm4tpu-cpu
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
@@ -12,8 +15,7 @@ pip install pytorch_lightning
 pip install yacs
 pip install matplotlib numpy pandas 
 
-
-python main_layout.py --cfg configs/tpugraphslayout.yaml 
+python main_layout_resnet_cv.py --epochs=1 --num-configs=33 --num-splits=2 --device=cpu
 ```
 
 Please change `accelerator` in [configs/tpugraphslayout.yaml](https://github.com/danteisalive/tpugraph/blob/main/configs/tpugraphslayout.yaml#L36) from `cuda` to `cpu` in the yaml file if you want to try CPU training.
@@ -21,6 +23,9 @@ Please change `accelerator` in [configs/tpugraphslayout.yaml](https://github.com
 ## Training-GPU 
 
 ```bash
+wget https://repo.anaconda.com/archive/Anaconda3-2023.09-0-Linux-x86_64.sh
+bash Anaconda3-2023.09-0-Linux-x86_64.sh
+conda config --set auto_activate_base false
 conda create --name llm4tpu-gpu python=3.11
 conda activate llm4tpu-gpu
 
@@ -30,6 +35,8 @@ pip install torch_geometric
 pip install pytorch_lightning
 pip install yacs
 pip install matplotlib numpy pandas 
+
+python main_layout_resnet_cv.py --epochs=1 --num-configs=33 --num-splits=2 --device=cuda
 ```
 
 Please change `accelerator` in [configs/tpugraphslayout.yaml](https://github.com/danteisalive/tpugraph/blob/main/configs/tpugraphslayout.yaml#L36) from `cpu` to `cuda` in the yaml file if you want to try GPU training.

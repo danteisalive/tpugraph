@@ -179,11 +179,11 @@ def validation(batch, model, ):
     
     outputs = model(batch)
 
-    val_loss = outputs['loss']
+    loss = outputs['loss']
 
     model.kendall_tau.update(outputs['pred'], outputs['target'], outputs['selected_configs'])
         
-    return val_loss
+    return float(loss)
 
 
 def reset_weights(model):
@@ -238,12 +238,17 @@ if __name__ == '__main__':
     parser.add_argument('--results-file-path', type=str, default='resnet_cv.csv')
     parser.add_argument('--search', type=str, default='random')
     parser.add_argument('--source', type=str, default='xla')
+    parser.add_argument('--device', type=str, default='cpu')
     parser.add_argument('--lr', type=float, default=0.005)
     parser.add_argument('--epochs', type=int, default=40)
     parser.add_argument('--wandb', action='store_true', help='Track experiment')
     args = parser.parse_args()
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if args.device == 'cuda':
+        assert torch.cuda.is_available(), "torch cuda is not available!"
+
+    device = torch.device(args.device)
+
     init_wandb(name=f'GCN-TPU', epochs=args.epochs,
             num_configs=args.num_configs, lr=args.lr, device=device)
 
@@ -300,7 +305,7 @@ if __name__ == '__main__':
             val_acc = model.kendall_tau.compute()
             model.kendall_tau.reset()
 
-            log(Epoch=epoch, TrainLoss=np.mean(train_loss), TrainAcc=train_acc, ValLoss=np.mean(val_loss), ValAcc=val_acc)
+            log(Epoch=epoch, TrainLoss=np.mean(train_loss), TrainAcc=float(train_acc), ValLoss=np.mean(val_loss), ValAcc=float(val_acc))
 
 
             times.append(time.time() - start)

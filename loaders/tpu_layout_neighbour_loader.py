@@ -366,7 +366,7 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
         self.config_selection = config_selection
 
         self.processed_paths = processed_paths + f"/layout/{self.source}/{self.search}/"
-        os.makedirs(processed_paths, exist_ok = True) 
+        os.makedirs(self.processed_paths, exist_ok = True) 
 
         splitname_str = "_".join(self.split_names)
         self.filename = f"layout_{self.source}_{self.search}_{self.config_selection}_{self.num_configs}_{splitname_str}.pt"
