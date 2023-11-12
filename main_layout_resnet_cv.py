@@ -262,11 +262,12 @@ if __name__ == '__main__':
         # print(model)
 
         times = []
-        train_loss = []
         for epoch in range(1, args.epochs + 1):
             
             start = time.time()
 
+            ######################## Train Loss and Acc. ########################
+            train_loss = []
             for batch in train_loader:
                 batch = batch.to(device)
                 train_loss.append(train(batch, model, optimizer,))
@@ -278,12 +279,21 @@ if __name__ == '__main__':
             train_acc = model.kendall_tau.compute()
             model.kendall_tau.reset()
 
-            log(Epoch=epoch, TrainLoss=np.mean(train_loss), TrainAcc=train_acc)
+            ######################## Val Loss and Acc. ########################
+            val_loss = []
+            for batch in val_loader:
+                batch = batch.to(device)
+                val_loss.append(validation(batch=batch, model=model,))
+            
+            val_acc = model.kendall_tau.compute()
+            model.kendall_tau.reset()
 
-            train_loss = []
+            log(Epoch=epoch, TrainLoss=np.mean(train_loss), TrainAcc=train_acc, ValLoss=np.mean(val_loss), ValAcc=val_acc)
+
 
             times.append(time.time() - start)
 
+        ######################## Fold Val Loss and Acc. ########################
         val_loss = []
         for batch in val_loader:
             batch = batch.to(device)
@@ -292,6 +302,7 @@ if __name__ == '__main__':
         val_acc = model.kendall_tau.compute()
         model.kendall_tau.reset()
         # model.kendall_tau.dump()
+        
         fold_results.append(val_acc)
         log(ValLoss=np.mean(val_loss), ValAcc=val_acc)
 
