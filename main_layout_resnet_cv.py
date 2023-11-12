@@ -64,14 +64,14 @@ class ResidualGCN(nn.Module):
                  gnn_hidden_dim : int,
                  gnn_out_dim : int ,
                  num_configs : int, 
+                 global_pooling : str,
                  hidden_activation : str = 'leaky_relu', 
-                 pooling : str = 'max',
                  ):
         super(ResidualGCN, self).__init__()
         # self.op_embedding = nn.Embedding(num_embeddings=num_ops, embedding_dim=hidden_dim)
         
         self.num_configs = num_configs
-        self.pooling_type = pooling
+        self.global_pooling_type = global_pooling
         prenet_dims = [num_feats, 4 * prenet_hidden_dim, 2 * prenet_hidden_dim,]
         self._prenet = MLP(prenet_dims, hidden_activation)
 
@@ -126,9 +126,9 @@ class ResidualGCN(nn.Module):
         x = self.conv3(x, edge_index)
         x = F.leaky_relu(x) + identity  # Add residual connection 
 
-        if self.pooling_type == 'mean+max':
+        if self.global_pooling_type == 'mean+max':
             x = global_mean_pool(x, batch.batch) + global_max_pool(x, batch.batch)
-        elif self.pooling_type == 'max':
+        elif self.global_pooling_type == 'max':
             x = global_max_pool(x, batch.batch)
         else:
             RuntimeError("Unknown pooling type!")
@@ -229,7 +229,10 @@ if __name__ == '__main__':
     parser.add_argument('--num-configs', type=int, default=33)
     parser.add_argument('--batch-size', type=int, default=8)
     parser.add_argument('--num-splits', type=int, default=5)
+    parser.add_argument('--num-layers', type=int, default=5)
     parser.add_argument('--aggr-type', type=str, default='mean')
+    parser.add_argument('--global-pooling-type', type=str, default='max')
+    parser.add_argument('--results-file-path', type=str, default='resnet_cv.csv')
     parser.add_argument('--search', type=str, default='random')
     parser.add_argument('--source', type=str, default='xla')
     parser.add_argument('--lr', type=float, default=0.005)
@@ -255,7 +258,13 @@ if __name__ == '__main__':
     for fold, (train_loader, val_loader) in enumerate(k_fold_cross_validation(dataset, k=args.num_splits, batch_size=args.batch_size, shuffle_dataset=True)):
         print(f"Starting fold {fold+1}")
 
-        model = ResidualGCN(num_feats=123, prenet_hidden_dim=32, gnn_hidden_dim=64, gnn_out_dim=64, num_configs=args.num_configs).to(device)
+        model = ResidualGCN(num_feats=123, 
+                            prenet_hidden_dim=32, 
+                            gnn_hidden_dim=64, 
+                            gnn_out_dim=64, 
+                            num_configs=args.num_configs,
+                            global_pooling=args.global_pooling_type,
+                            ).to(device)
         model.apply(reset_weights)
         optimizer = torch.optim.Adam(model.parameters(), lr=0.005, weight_decay=5e-4)
 
@@ -302,7 +311,7 @@ if __name__ == '__main__':
         val_acc = model.kendall_tau.compute()
         model.kendall_tau.reset()
         # model.kendall_tau.dump()
-        
+
         fold_results.append(val_acc)
         log(ValLoss=np.mean(val_loss), ValAcc=val_acc)
 
