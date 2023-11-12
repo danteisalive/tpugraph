@@ -20,9 +20,6 @@ from network.reduced_features_node_encoder import ReducedFeatureNodeEncoder
 from torch_geometric.nn import GCNConv
 
 NUM_CPUS = os.cpu_count() 
-NUM_CONFIGS = 33
-BATCH_SIZE = 8
-NUM_SPLITS = 5
 
 def get_activation(hidden_activation : str):
 
@@ -66,12 +63,14 @@ class ResidualGCN(nn.Module):
                  prenet_hidden_dim : int , 
                  gnn_hidden_dim : int,
                  gnn_out_dim : int ,
+                 num_configs : int, 
                  hidden_activation : str = 'leaky_relu', 
                  pooling : str = 'max',
                  ):
         super(ResidualGCN, self).__init__()
         # self.op_embedding = nn.Embedding(num_embeddings=num_ops, embedding_dim=hidden_dim)
         
+        self.num_configs = num_configs
         self.pooling_type = pooling
         prenet_dims = [num_feats, 4 * prenet_hidden_dim, 2 * prenet_hidden_dim,]
         self._prenet = MLP(prenet_dims, hidden_activation)
@@ -137,14 +136,12 @@ class ResidualGCN(nn.Module):
 
         pred = self._postnet(x)
         true = batch.y
-
-        num_configs = NUM_CONFIGS
         
-        pred = pred.view(-1, num_configs)
+        pred = pred.view(-1, self.num_configs)
 
         if hasattr(batch, 'selected_config'):
-            selected_configs = batch.selected_config.view(-1, num_configs)
-            true = true.view(-1, num_configs)
+            selected_configs = batch.selected_config.view(-1, self.num_configs)
+            true = true.view(-1, self.num_configs)
             # print("MODEL: ", pred.shape, true.shape, batch.selected_config.shape)
             loss = self.loss_fn(pred, true, selected_configs)
             outputs = {'pred': pred, 'target': true, 'loss': loss, 'selected_configs': selected_configs}
@@ -196,7 +193,7 @@ def reset_weights(model):
     # print(f'Reset trainable parameters of layer = {layer}')
     layer.reset_parameters()
 
-def k_fold_cross_validation(dataset, k=NUM_SPLITS, batch_size=BATCH_SIZE, shuffle_dataset=True):
+def k_fold_cross_validation(dataset, k, batch_size, shuffle_dataset=True):
     dataset_size = len(dataset)
     indices = list(range(dataset_size))
 
@@ -229,32 +226,36 @@ def k_fold_cross_validation(dataset, k=NUM_SPLITS, batch_size=BATCH_SIZE, shuffl
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, default='TPU')
     parser.add_argument('--num-configs', type=int, default=33)
+    parser.add_argument('--batch-size', type=int, default=8)
+    parser.add_argument('--num-splits', type=int, default=5)
+    parser.add_argument('--aggr-type', type=str, default='mean')
+    parser.add_argument('--search', type=str, default='random')
+    parser.add_argument('--source', type=str, default='xla')
     parser.add_argument('--lr', type=float, default=0.005)
-    parser.add_argument('--epochs', type=int, default=200)
+    parser.add_argument('--epochs', type=int, default=40)
     parser.add_argument('--wandb', action='store_true', help='Track experiment')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    init_wandb(name=f'GCN-{args.dataset}', epochs=args.epochs,
+    init_wandb(name=f'GCN-TPU', epochs=args.epochs,
             num_configs=args.num_configs, lr=args.lr, device=device)
 
 
     dataset = TPULayoutDatasetFullGraph(data_dir="/home/cc/data/tpugraphs/npz", 
                                         split_names=['train','valid',], 
-                                        search='random', 
-                                        source='xla',
+                                        search=args.search, 
+                                        source=args.source,
                                         processed_paths='/home/cc/tpugraph/datasets/TPUGraphs/processed',
-                                        num_configs=NUM_CONFIGS, 
+                                        num_configs=args.num_configs, 
                                         config_selection='min-rand-max', 
                                         )
 
     fold_results = []
-    for fold, (train_loader, val_loader) in enumerate(k_fold_cross_validation(dataset, k=NUM_SPLITS, batch_size=BATCH_SIZE, shuffle_dataset=True)):
+    for fold, (train_loader, val_loader) in enumerate(k_fold_cross_validation(dataset, k=args.num_splits, batch_size=args.batch_size, shuffle_dataset=True)):
         print(f"Starting fold {fold+1}")
 
-        model = ResidualGCN(num_feats=123, prenet_hidden_dim=32, gnn_hidden_dim=64, gnn_out_dim=64,).to(device)
+        model = ResidualGCN(num_feats=123, prenet_hidden_dim=32, gnn_hidden_dim=64, gnn_out_dim=64, num_configs=args.num_configs).to(device)
         model.apply(reset_weights)
         optimizer = torch.optim.Adam(model.parameters(), lr=0.005, weight_decay=5e-4)
 
@@ -297,4 +298,4 @@ if __name__ == '__main__':
         print(f"Median time per epoch: {torch.tensor(times).median():.4f}s")
         print(f"-----------------------------------------------------------")
 
-    print(f"Cross Validation Accuracy Over {NUM_SPLITS} Splits: {np.mean(fold_results):.4f}")
+    print(f"Cross Validation Accuracy Over {args.num_splits} Splits: {np.mean(fold_results):.4f}")
