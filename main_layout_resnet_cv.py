@@ -59,42 +59,77 @@ def MLP(dims, hidden_activation, use_bias=True):
     return nn.Sequential(*layers)
 
 class ResidualGCN(nn.Module):
+
+    def _verify_args(self):
+        assert self.n_layers_mp >= 2, ""
+        assert self.global_pooling_type in ['mean', 'max', 'mean+max', ]
+
     def __init__(self, 
                  num_feats : int, 
+                 n_layers_mp : int, 
                  prenet_hidden_dim : int , 
                  gnn_hidden_dim : int,
                  gnn_out_dim : int ,
                  num_configs : int, 
-                 global_pooling : str,
+                 global_pooling_type : str,
                  hidden_activation : str = 'leaky_relu', 
                  ):
         super(ResidualGCN, self).__init__()
-        # self.op_embedding = nn.Embedding(num_embeddings=num_ops, embedding_dim=hidden_dim)
         
+        self.n_layers_mp = n_layers_mp
         self.num_configs = num_configs
-        self.global_pooling_type = global_pooling
+        self.global_pooling_type = global_pooling_type
+
+        self._verify_args()
+
         prenet_dims = [num_feats, 4 * prenet_hidden_dim, 2 * prenet_hidden_dim,]
         self._prenet = MLP(prenet_dims, hidden_activation)
 
         gnn_in_dim = prenet_dims[-1]
-        self.conv1 = GCNConv(gnn_in_dim, gnn_hidden_dim)
-        self.conv2 = GCNConv(gnn_hidden_dim, gnn_hidden_dim)
-        self.conv3 = GCNConv(gnn_hidden_dim, gnn_out_dim)
+
+        gnn_layers = []
+        residual_layers = []
+        for i in range(self.n_layers_mp):
+
+            if i == 0:
+                gnn_layers.append(GCNConv(gnn_in_dim, gnn_hidden_dim))
+                if gnn_in_dim != gnn_hidden_dim:
+                    residual_layers.append(torch.nn.Linear(gnn_in_dim, gnn_hidden_dim, bias=False))
+                else:
+                    residual_layers.append(torch.nn.Identity())
+
+            elif i == self.n_layers_mp -1:
+                gnn_layers.append(GCNConv(gnn_hidden_dim, gnn_out_dim))
+                if gnn_hidden_dim != gnn_out_dim:
+                    residual_layers.append(torch.nn.Linear(gnn_hidden_dim, gnn_out_dim, bias=False))
+                else:
+                    residual_layers.append(torch.nn.Identity())      
+
+            else: 
+                gnn_layers.append(GCNConv(gnn_hidden_dim, gnn_hidden_dim))
+                residual_layers.append(torch.nn.Identity())   
+
+        self.gnn_layers = torch.nn.Sequential(*gnn_layers)
+        self.residual_layers = torch.nn.Sequential(*residual_layers)
+
+        # self.conv1 = GCNConv(gnn_in_dim, gnn_hidden_dim)
+        # self.conv2 = GCNConv(gnn_hidden_dim, gnn_hidden_dim)
+        # self.conv3 = GCNConv(gnn_hidden_dim, gnn_out_dim)
         
-        # First layer residual connection
-        if gnn_in_dim != gnn_hidden_dim:
-            self.residual_layer_1 = torch.nn.Linear(gnn_in_dim, gnn_hidden_dim, bias=False)
-        else:
-            self.residual_layer_1 = torch.nn.Identity()
+        # # First layer residual connection
+        # if gnn_in_dim != gnn_hidden_dim:
+        #     self.residual_layer_1 = torch.nn.Linear(gnn_in_dim, gnn_hidden_dim, bias=False)
+        # else:
+        #     self.residual_layer_1 = torch.nn.Identity()
 
-        # Second layer residual connection
-        self.residual_layer_2 = torch.nn.Identity()
+        # # Second layer residual connection
+        # self.residual_layer_2 = torch.nn.Identity()
 
-        # Third layer residual connection
-        if gnn_hidden_dim != gnn_out_dim:
-            self.residual_layer_3 = torch.nn.Linear(gnn_hidden_dim, gnn_out_dim, bias=False)
-        else:
-            self.residual_layer_3 = torch.nn.Identity()
+        # # Third layer residual connection
+        # if gnn_hidden_dim != gnn_out_dim:
+        #     self.residual_layer_3 = torch.nn.Linear(gnn_hidden_dim, gnn_out_dim, bias=False)
+        # else:
+        #     self.residual_layer_3 = torch.nn.Identity()
 
         self._postnet = MLP([gnn_out_dim, 1], hidden_activation, use_bias=False)
 
@@ -108,24 +143,28 @@ class ResidualGCN(nn.Module):
         x = batch.x
         edge_index = batch.edge_index
 
-        # x = self.op_embedding(x)
-
         x = self._prenet(x)
         x = F.leaky_relu(x)
 
+        for i in range(self.n_layers_mp):
+            identity = self.residual_layers[i](x)
+            x = self.gnn_layers[i](x, edge_index)
+            x = F.leaky_relu(x)
+            x = x + identity 
 
-        identity = self.residual_layer_1(x)
-        x = self.conv1(x, edge_index)
-        x = F.leaky_relu(x)
-        x = x + identity  # Add residual connection 
 
-        identity = self.residual_layer_2(x)
-        x = self.conv2(x, edge_index)
-        x = F.leaky_relu(x) + identity  # Add residual connection 
+        # identity = self.residual_layer_1(x)
+        # x = self.conv1(x, edge_index)
+        # x = F.leaky_relu(x)
+        # x = x + identity  # Add residual connection 
 
-        identity = self.residual_layer_3(x)
-        x = self.conv3(x, edge_index)
-        x = F.leaky_relu(x) + identity  # Add residual connection 
+        # identity = self.residual_layer_2(x)
+        # x = self.conv2(x, edge_index)
+        # x = F.leaky_relu(x) + identity  # Add residual connection 
+
+        # identity = self.residual_layer_3(x)
+        # x = self.conv3(x, edge_index)
+        # x = F.leaky_relu(x) + identity  # Add residual connection 
 
         if self.global_pooling_type == 'mean+max':
             x = global_mean_pool(x, batch.batch) + global_max_pool(x, batch.batch)
@@ -232,7 +271,10 @@ if __name__ == '__main__':
     parser.add_argument('--num-configs', type=int, default=33)
     parser.add_argument('--batch-size', type=int, default=8)
     parser.add_argument('--num-splits', type=int, default=5)
-    parser.add_argument('--num-layers', type=int, default=5)
+    parser.add_argument('--num-gnn-layers', type=int, default=5)
+    parser.add_argument('--prenet-hidden-dim', type=int, default=32)
+    parser.add_argument('--gnn-hidden-dim', type=int, default=64)
+    parser.add_argument('--gnn-out-dim', type=int, default=64)
     parser.add_argument('--aggr-type', type=str, default='mean')
     parser.add_argument('--global-pooling-type', type=str, default='max')
     parser.add_argument('--results-file-path', type=str, default='resnet_cv.csv')
@@ -272,16 +314,18 @@ if __name__ == '__main__':
         print(f"Starting fold {fold+1}")
 
         model = ResidualGCN(num_feats=num_feats, 
-                            prenet_hidden_dim=32, 
-                            gnn_hidden_dim=64, 
-                            gnn_out_dim=64, 
+                            n_layers_mp=args.num_gnn_layers,
+                            prenet_hidden_dim=args.prenet_hidden_dim, 
+                            gnn_hidden_dim=args.gnn_hidden_dim, 
+                            gnn_out_dim=args.gnn_out_dim, 
                             num_configs=args.num_configs,
-                            global_pooling=args.global_pooling_type,
+                            global_pooling_type=args.global_pooling_type,
                             ).to(device)
         model.apply(reset_weights)
         optimizer = torch.optim.Adam(model.parameters(), lr=0.005, weight_decay=5e-4)
 
-        # print(model)
+        print(model)
+        assert(0)
 
         times = []
         for epoch in range(1, args.epochs + 1):
