@@ -19,6 +19,7 @@ from network.ListMLE_loss import ListMLELoss
 from network.kendal_tau_metric import KendallTau
 from network.reduced_features_node_encoder import ReducedFeatureNodeEncoder
 from torch_geometric.nn import GCNConv
+import torch_geometric
 
 NUM_CPUS = os.cpu_count() 
 
@@ -112,24 +113,6 @@ class ResidualGCN(nn.Module):
         self.gnn_layers = torch.nn.Sequential(*gnn_layers)
         self.residual_layers = torch.nn.Sequential(*residual_layers)
 
-        # self.conv1 = GCNConv(gnn_in_dim, gnn_hidden_dim)
-        # self.conv2 = GCNConv(gnn_hidden_dim, gnn_hidden_dim)
-        # self.conv3 = GCNConv(gnn_hidden_dim, gnn_out_dim)
-        
-        # # First layer residual connection
-        # if gnn_in_dim != gnn_hidden_dim:
-        #     self.residual_layer_1 = torch.nn.Linear(gnn_in_dim, gnn_hidden_dim, bias=False)
-        # else:
-        #     self.residual_layer_1 = torch.nn.Identity()
-
-        # # Second layer residual connection
-        # self.residual_layer_2 = torch.nn.Identity()
-
-        # # Third layer residual connection
-        # if gnn_hidden_dim != gnn_out_dim:
-        #     self.residual_layer_3 = torch.nn.Linear(gnn_hidden_dim, gnn_out_dim, bias=False)
-        # else:
-        #     self.residual_layer_3 = torch.nn.Identity()
 
         self._postnet = MLP([gnn_out_dim, 1], hidden_activation, use_bias=False)
 
@@ -307,7 +290,6 @@ if __name__ == '__main__':
     # Find number of features based on the dataset
     assert dataset.num_feats is not None, ""
     num_feats = dataset.num_feats
-    print("num_feats: ", num_feats)
 
     fold_results = {}
     for fold, (train_loader, val_loader) in enumerate(k_fold_cross_validation(dataset, k=args.num_splits, batch_size=args.batch_size, shuffle_dataset=True)):
@@ -322,10 +304,11 @@ if __name__ == '__main__':
                             global_pooling_type=args.global_pooling_type,
                             ).to(device)
         model.apply(reset_weights)
+        # model = torch_geometric.compile(model)
+
         optimizer = torch.optim.Adam(model.parameters(), lr=0.005, weight_decay=5e-4)
 
         print(model)
-        assert(0)
 
         times = []
         for epoch in range(1, args.epochs + 1):
@@ -388,14 +371,17 @@ if __name__ == '__main__':
     result = {
             'num-configs': args.num_configs,
             'batch-size': args.batch_size,
-            'num-layers': args.num_layers, 
+            'num-gnn-layers': args.num_gnn_layers, 
+            'prenet-hidden-dim' : args.prenet_hidden_dim, 
+            'gnn-hidden-dim' : args.gnn_hidden_dim, 
+            'gnn-out-dim' : args.gnn_out_dim,
             'node-pooling': args.aggr_type, 
             'global-pooling': args.global_pooling_type,
             'CV-val-acc.' : np.mean(fold_val_acc),
             'CV-train-acc.' : np.mean(fold_train_acc),
             }
     
-    fieldnames = ['num-configs', 'batch-size', 'num-layers' ,'node-pooling', 'global-pooling', 'CV-val-acc.', 'CV-train-acc.', ]
+    fieldnames = ['num-configs', 'batch-size', 'num-gnn-layers' ,'prenet-hidden-dim', 'gnn-hidden-dim', 'gnn-out-dim', 'node-pooling', 'global-pooling', 'CV-val-acc.', 'CV-train-acc.', ]
 
     with open(args.results_file_path, 'a', newline='') as file:
         

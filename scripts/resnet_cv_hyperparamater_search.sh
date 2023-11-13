@@ -30,10 +30,10 @@ for nl in ${!n_mp_layers[@]}; do
                         fi
 
                         python ./../main_layout_resnet_cv.py \
-                            --epochs 1 \
+                            --epochs 50 \
                             --num-configs 33 \
                             --batch-size 8 \
-                            --num-splits 2 \
+                            --num-splits 5 \
                             --device 'cuda' \
                             --num-gnn-layers $n_mp_layer \
                             --prenet-hidden-dim $pre_hid_dim \
