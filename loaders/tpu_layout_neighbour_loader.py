@@ -370,6 +370,9 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
 
         splitname_str = "_".join(self.split_names)
         self.filename = f"layout_{self.source}_{self.search}_{self.config_selection}_{self.num_configs}_{splitname_str}.pt"
+        
+        # this will be determined when the whole dataset is processed as it depends on the `num_configs`
+        self.num_feats = None 
 
         self.feature_normalizer = NodeFeaturesNormalizer()
         self.collator  = LayoutCollator(num_configs=self.num_configs, 
@@ -392,6 +395,9 @@ class TPULayoutDatasetFullGraph(torch.utils.data.Dataset):
         else:
             print(f"{self.filename} doesn't exists! Generating processed dataset! This may take a while! Go get a coffee or sth!")
             self.processed_dataset = self._process()
+
+        self.num_feats = self.processed_dataset[0][0].x.shape[1]
+
 
     @property
     def num_sample_config(self) -> int:

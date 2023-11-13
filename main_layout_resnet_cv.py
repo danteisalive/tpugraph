@@ -262,11 +262,16 @@ if __name__ == '__main__':
                                         config_selection='min-rand-max', 
                                         )
 
+    # Find number of features based on the dataset
+    assert dataset.num_feats is not None, ""
+    num_feats = dataset.num_feats
+    print("num_feats: ", num_feats)
+
     fold_results = {}
     for fold, (train_loader, val_loader) in enumerate(k_fold_cross_validation(dataset, k=args.num_splits, batch_size=args.batch_size, shuffle_dataset=True)):
         print(f"Starting fold {fold+1}")
 
-        model = ResidualGCN(num_feats=123, 
+        model = ResidualGCN(num_feats=num_feats, 
                             prenet_hidden_dim=32, 
                             gnn_hidden_dim=64, 
                             gnn_out_dim=64, 
@@ -320,7 +325,7 @@ if __name__ == '__main__':
         model.kendall_tau.reset()
         # model.kendall_tau.dump()
 
-        fold_results[fold] = (train_acc, val_acc)
+        fold_results[fold] = (float(train_acc), float(val_acc))
         log(ValLoss=np.mean(val_loss), ValAcc=val_acc)
 
         print(f"Median time per epoch: {torch.tensor(times).median():.4f}s")
