@@ -3,9 +3,9 @@
 global_pooling_types=("mean" "max" "mean+max")
 aggregation_types=("mean")
 n_mp_layers=(2 3 4)
-pre_hid_dims=(32)
-gnn_hid_dims=(64)
-gnn_out_dims=(64)
+pre_hid_dims=(32 64)
+gnn_hid_dims=(64 128)
+gnn_out_dims=(64 128)
 
 for nl in ${!n_mp_layers[@]}; do
     for at in ${!aggregation_types[@]}; do
@@ -34,6 +34,7 @@ for nl in ${!n_mp_layers[@]}; do
                             --num-configs 33 \
                             --batch-size 8 \
                             --num-splits 2 \
+                            --device 'cuda' \
                             --num-gnn-layers $n_mp_layer \
                             --prenet-hidden-dim $pre_hid_dim \
                             --gnn-hidden-dim $gnn_hid_dim \
