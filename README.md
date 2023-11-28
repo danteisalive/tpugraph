@@ -44,8 +44,27 @@ Please change `accelerator` in [configs/tpugraphslayout.yaml](https://github.com
 ## Training-TPU
 
 ```bash
+wget https://repo.anaconda.com/archive/Anaconda3-2023.09-0-Linux-x86_64.sh
+bash Anaconda3-2023.09-0-Linux-x86_64.sh
+conda config --set auto_activate_base false
+conda create --name llm4tpu-tpu python=3.11
+conda activate llm4tpu-tpu
+
+# Pre-build installation 
 pip install -U --pre jaxlib -f https://storage.googleapis.com/jax-releases/jaxlib_nightly_releases.html
 pip install -U libtpu-nightly==0.1.dev20231128  -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+
+# Build yourself! 
+# checkout commit number from third_party/xla/workspace.bzl
+git checkout 33fc605a8a118368eaf8f748c8e90eeb18f2e0d3
+# install latest version of libtpu by date
+pip install -U libtpu-nightly==0.1.dev20231128  -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+# build jaxlib
+python build/build.py --bazel_options=--override_repository=xla=/home/arasool_sh2000_gmail_com/xla
+# install
+pip install /home/arasool_sh2000_gmail_com/jax/dist/jaxlib-0.4.21.dev20231128-cp311-cp311-manylinux2014_x86_64.whl --force-reinstall
+# check correct functionality
+python -c 'import jax; print(jax.devices())'
 ```
 
 ## Dataset
