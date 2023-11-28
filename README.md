@@ -41,7 +41,12 @@ python main_layout_resnet_cv.py --epochs=1 --num-configs=33 --num-splits=2 --dev
 
 Please change `accelerator` in [configs/tpugraphslayout.yaml](https://github.com/danteisalive/tpugraph/blob/main/configs/tpugraphslayout.yaml#L36) from `cpu` to `cuda` in the yaml file if you want to try GPU training.
 
+## Training-TPU
 
+```bash
+pip install -U --pre jaxlib -f https://storage.googleapis.com/jax-releases/jaxlib_nightly_releases.html
+pip install -U libtpu-nightly==0.1.dev20231128  -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+```
 
 ## Dataset
 
