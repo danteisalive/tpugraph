@@ -63,6 +63,8 @@ pip install -U libtpu-nightly==0.1.dev20231128  -f https://storage.googleapis.co
 python build/build.py --bazel_options=--override_repository=xla=/home/arasool_sh2000_gmail_com/xla
 #install
 pip install /home/arasool_sh2000_gmail_com/jax/dist/jaxlib-0.4.21.dev20231128-cp311-cp311-manylinux2014_x86_64.whl --force-reinstall
+#install jax
+pip install -e .
 #check correct functionality
 python -c 'import jax; print(jax.devices())'
 ```
