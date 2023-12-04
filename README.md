@@ -69,6 +69,50 @@ pip install -e .
 python -c 'import jax; print(jax.devices())'
 ```
 
+## HLO-ENV
+
+```bash
+
+sudo apt update
+sudo apt install liblapack3 
+sudo apt install liblapack-dev 
+sudo apt install libopenblas-base 
+sudo apt install libopenblas-dev 
+sudo apt install liblapacke-dev 
+sudo apt install liblapack-dev
+
+
+#install cuda-11.2 by downloading the local installer from NVIDIA website
+# if GPU enabled, then install the driver too if it's not already
+wget https://developer.download.nvidia.com/compute/cuda/11.2.2/local_installers/cuda_11.2.2_460.32.03_linux.run
+sudo sh cuda_11.2.2_460.32.03_linux.run
+
+
+
+#setup your paths
+echo 'export PATH=/usr/local/cuda-11.2/bin:$PATH' >> ~/.bashrc
+echo 'export LD_LIBRARY_PATH=/usr/local/cuda-11.2/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
+source ~/.bashrc
+sudo ldconfig
+
+#install cuDNN v8.1
+#in order to download cuDNN you have to be regeistered here https://developer.nvidia.com/developer-program/signup
+#then download cuDNN v8.1 form https://developer.nvidia.com/cudnn
+
+CUDNN_TAR_FILE="cudnn-11.2-linux-x64-v8.1.1.33.tgz"
+wget https://developer.nvidia.com/compute/machine-learning/cudnn/secure/8.1.1.33/11.2_20210301/cudnn-11.2-linux-x64-v8.1.1.33.tgz
+tar -xzvf ${CUDNN_TAR_FILE}
+
+
+#copy the following files into the cuda toolkit directory.
+sudo cp -P cuda/include/cudnn* /usr/local/cuda-11.2/include
+sudo cp -P cuda/lib64/libcudnn* /usr/local/cuda-11.2/lib64/
+sudo chmod a+r /usr/local/cuda-11.2/lib64/libcudnn*
+
+#verify cudnn installation
+cat /usr/include/x86_64-linux-gnu/cudnn_v*.h | grep CUDNN_MAJOR -A 2
+```
+
 ## Dataset
 
 The dataset consists of two compiler optimization collections: *layout* and *tile*.
