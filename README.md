@@ -74,12 +74,7 @@ python -c 'import jax; print(jax.devices())'
 ```bash
 
 sudo apt update
-sudo apt install liblapack3 
-sudo apt install liblapack-dev 
-sudo apt install libopenblas-base 
-sudo apt install libopenblas-dev 
-sudo apt install liblapacke-dev 
-sudo apt install liblapack-dev
+sudo apt install liblapack3 liblapack-dev  libopenblas-base libopenblas-dev liblapacke-dev liblapack-dev
 
 
 #install cuda-11.2 by downloading the local installer from NVIDIA website
