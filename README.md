@@ -105,7 +105,7 @@ sudo cp -P cuda/lib64/libcudnn* /usr/local/cuda-11.2/lib64/
 sudo chmod a+r /usr/local/cuda-11.2/lib64/libcudnn*
 
 #verify cudnn installation
-cat /usr/include/x86_64-linux-gnu/cudnn_v*.h | grep CUDNN_MAJOR -A 2
+cat /usr/local/cuda-11.2/include/cudnn_version.h | grep CUDNN_MAJOR -A 2
 ```
 
 ## Dataset
